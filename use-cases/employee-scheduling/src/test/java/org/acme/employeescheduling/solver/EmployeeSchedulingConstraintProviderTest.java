@@ -5,6 +5,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.Collections;
+import java.util.List;
 import java.util.Set;
 
 import jakarta.inject.Inject;
@@ -14,6 +15,7 @@ import ai.timefold.solver.core.api.score.stream.test.ConstraintVerifier;
 import org.acme.employeescheduling.domain.Employee;
 import org.acme.employeescheduling.domain.EmployeeSchedule;
 import org.acme.employeescheduling.domain.Shift;
+import org.acme.employeescheduling.domain.UnavailablePeriod;
 import org.junit.jupiter.api.Test;
 
 import io.quarkus.test.junit.QuarkusTest;
@@ -43,6 +45,34 @@ class EmployeeSchedulingConstraintProviderTest {
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::requiredSkill)
                 .given(employee,
                         new Shift("2", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee))
+                .penalizes(0);
+    }
+
+    @Test
+    void classroomMatch() {
+        Employee teacher = new Employee("Amy", Set.of("Teacher"), "1A", null, null, null);
+        Shift shift = new Shift("1", DAY_START_TIME, DAY_END_TIME, "Refter", "Teacher", teacher);
+
+        // The shift supervises the teacher's own classroom.
+        shift.setClassrooms(Set.of("1A", "1B"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
+                .given(teacher, shift)
+                .penalizes(0);
+
+        // The shift only supervises another classroom.
+        shift.setClassrooms(Set.of("2A"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
+                .given(teacher, shift)
+                .penalizes(1);
+
+        // A shift without classrooms matches any teacher.
+        shift.setClassrooms(null);
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
+                .given(teacher, shift)
+                .penalizes(0);
+        shift.setClassrooms(Collections.emptySet());
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
+                .given(teacher, shift)
                 .penalizes(0);
     }
 
@@ -154,6 +184,30 @@ class EmployeeSchedulingConstraintProviderTest {
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::unavailableEmployee)
                 .given(employee1, employee2,
                         new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee2))
+                .penalizes(0);
+    }
+
+    @Test
+    void unavailableEmployeePartOfDay() {
+        // Not available on Monday morning, for example a weekly doctor's appointment.
+        Employee employee = new Employee("Amy", Set.of("Teacher"), "1A", Set.of(),
+                List.of(new UnavailablePeriod(DAY_1, LocalTime.of(8, 0), LocalTime.of(12, 30))),
+                Set.of(), Set.of());
+
+        // A shift overlapping the unavailable period is penalized by the overlap in minutes.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::unavailableEmployeePartOfDay)
+                .given(employee,
+                        new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", employee))
+                .penalizesBy(30);
+        // A shift not overlapping the unavailable period is not penalized.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::unavailableEmployeePartOfDay)
+                .given(employee,
+                        new Shift("2", DAY_1.atTime(14, 0), DAY_1.atTime(15, 0), "Refter", "Teacher", employee))
+                .penalizes(0);
+        // A shift on another day is not penalized.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::unavailableEmployeePartOfDay)
+                .given(employee,
+                        new Shift("3", DAY_3.atTime(9, 0), DAY_3.atTime(10, 0), "Refter", "Teacher", employee))
                 .penalizes(0);
     }
 

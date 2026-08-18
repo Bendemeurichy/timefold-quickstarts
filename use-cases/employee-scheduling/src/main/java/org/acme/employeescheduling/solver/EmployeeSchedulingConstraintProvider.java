@@ -37,10 +37,12 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
         return new Constraint[] {
                 // Hard constraints
                 requiredSkill(constraintFactory),
+                classroomMatch(constraintFactory),
                 noOverlappingShifts(constraintFactory),
                 atLeast10HoursBetweenTwoShifts(constraintFactory),
                 oneShiftPerDay(constraintFactory),
                 unavailableEmployee(constraintFactory),
+                unavailableEmployeePartOfDay(constraintFactory),
 
                 // Soft constraints
                 undesiredDayForEmployee(constraintFactory),
@@ -54,6 +56,14 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
                 .filter(shift -> !shift.getEmployee().getSkills().contains(shift.getRequiredSkill()))
                 .penalize(HardSoftBigDecimalScore.ONE_HARD)
                 .asConstraint("Missing required skill");
+    }
+
+    Constraint classroomMatch(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Shift.class)
+                .filter(shift -> shift.getClassrooms() != null && !shift.getClassrooms().isEmpty()
+                        && !shift.getClassrooms().contains(shift.getEmployee().getClassroom()))
+                .penalize(HardSoftBigDecimalScore.ONE_HARD)
+                .asConstraint("Wrong classroom");
     }
 
     Constraint noOverlappingShifts(ConstraintFactory constraintFactory) {
@@ -91,6 +101,18 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
                 .filter(Shift::isOverlappingWithDate)
                 .penalize(HardSoftBigDecimalScore.ONE_HARD, Shift::getOverlappingDurationInMinutes)
                 .asConstraint("Unavailable employee");
+    }
+
+    Constraint unavailableEmployeePartOfDay(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Shift.class)
+                .join(Employee.class, equal(Shift::getEmployee, Function.identity()))
+                .flattenLast(Employee::getUnavailablePeriods)
+                .filter((shift, period) -> shift.getOverlappingDurationInMinutes(
+                        period.getDate().atTime(period.getFrom()), period.getDate().atTime(period.getTo())) > 0)
+                .penalize(HardSoftBigDecimalScore.ONE_HARD,
+                        (shift, period) -> shift.getOverlappingDurationInMinutes(
+                                period.getDate().atTime(period.getFrom()), period.getDate().atTime(period.getTo())))
+                .asConstraint("Unavailable employee (part of day)");
     }
 
     Constraint undesiredDayForEmployee(ConstraintFactory constraintFactory) {

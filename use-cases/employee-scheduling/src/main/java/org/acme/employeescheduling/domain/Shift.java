@@ -5,6 +5,7 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.temporal.ChronoUnit;
 import java.util.Objects;
+import java.util.Set;
 
 import ai.timefold.solver.core.api.domain.entity.PlanningEntity;
 import ai.timefold.solver.core.api.domain.common.PlanningId;
@@ -20,6 +21,12 @@ public class Shift {
 
     private String location;
     private String requiredSkill;
+
+    /**
+     * The classrooms this shift supervises. A teacher only matches if their classroom is one of these.
+     * If empty or null, any teacher matches.
+     */
+    private Set<String> classrooms;
 
     @PlanningVariable
     private Employee employee;
@@ -84,6 +91,14 @@ public class Shift {
         this.requiredSkill = requiredSkill;
     }
 
+    public Set<String> getClassrooms() {
+        return classrooms;
+    }
+
+    public void setClassrooms(Set<String> classrooms) {
+        this.classrooms = classrooms;
+    }
+
     public Employee getEmployee() {
         return employee;
     }
@@ -100,6 +115,10 @@ public class Shift {
         LocalDateTime startDateTime = LocalDateTime.of(date, LocalTime.MIN);
         LocalDateTime endDateTime = LocalDateTime.of(date, LocalTime.MAX);
         return getOverlappingDurationInMinutes(startDateTime, endDateTime, getStart(), getEnd());
+    }
+
+    public int getOverlappingDurationInMinutes(LocalDateTime start, LocalDateTime end) {
+        return getOverlappingDurationInMinutes(start, end, getStart(), getEnd());
     }
 
     private int getOverlappingDurationInMinutes(LocalDateTime firstStartDateTime, LocalDateTime firstEndDateTime,

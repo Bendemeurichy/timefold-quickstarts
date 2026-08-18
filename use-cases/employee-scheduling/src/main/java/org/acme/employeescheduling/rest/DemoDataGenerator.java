@@ -1,19 +1,14 @@
 package org.acme.employeescheduling.rest;
 
 import java.time.DayOfWeek;
-import java.time.Duration;
 import java.time.LocalDate;
-import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.temporal.TemporalAdjusters;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
-import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -23,53 +18,41 @@ import jakarta.enterprise.context.ApplicationScoped;
 import org.acme.employeescheduling.domain.Employee;
 import org.acme.employeescheduling.domain.EmployeeSchedule;
 import org.acme.employeescheduling.domain.Shift;
+import org.acme.employeescheduling.domain.UnavailablePeriod;
 
 @ApplicationScoped
 public class DemoDataGenerator {
     public enum DemoData {
         SMALL(new DemoDataParameters(
-                List.of("Ambulatory care", "Critical care", "Pediatric care"),
-                List.of("Doctor", "Nurse"),
-                List.of("Anaesthetics", "Cardiology"),
-                14,
-                15,
-                List.of(new CountDistribution(1, 3),
-                        new CountDistribution(2, 1)
-                ),
-                List.of(new CountDistribution(1, 0.9),
-                        new CountDistribution(2, 0.1)
-                ),
-                List.of(new CountDistribution(1, 4),
-                        new CountDistribution(2, 3),
-                        new CountDistribution(3, 2),
-                        new CountDistribution(4, 1)
-                ),
+                List.of(new ShiftDemand("Speelplaats", LocalTime.of(10, 0), LocalTime.of(10, 30), Set.of("1A", "1B")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(10, 0), LocalTime.of(10, 30), Set.of("2A", "2B")),
+                        new ShiftDemand("Refter", LocalTime.of(12, 0), LocalTime.of(13, 0), Set.of("1A", "1B")),
+                        new ShiftDemand("Refter", LocalTime.of(12, 0), LocalTime.of(13, 0), Set.of("2A", "2B")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(12, 0), LocalTime.of(13, 0), Set.of("1A", "2A")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(12, 0), LocalTime.of(13, 0), Set.of("1B", "2B")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(14, 45), LocalTime.of(15, 15), Set.of("1A", "1B")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(14, 45), LocalTime.of(15, 15), Set.of("2A", "2B"))),
+                List.of("1A", "1B", "2A", "2B"),
+                10, // school days (2 weeks)
+                15, // teachers
                 0
         )),
         LARGE(new DemoDataParameters(
-                List.of("Ambulatory care",
-                        "Neurology",
-                        "Critical care",
-                        "Pediatric care",
-                        "Surgery",
-                        "Radiology",
-                        "Outpatient"),
-                List.of("Doctor", "Nurse"),
-                List.of("Anaesthetics", "Cardiology", "Radiology"),
-                28,
-                50,
-                List.of(new CountDistribution(1, 3),
-                        new CountDistribution(2, 1)
-                ),
-                List.of(new CountDistribution(1, 0.5),
-                        new CountDistribution(2, 0.3),
-                        new CountDistribution(3, 0.2)
-                ),
-                List.of(new CountDistribution(5, 4),
-                        new CountDistribution(10, 3),
-                        new CountDistribution(15, 2),
-                        new CountDistribution(20, 1)
-                ),
+                List.of(new ShiftDemand("Speelplaats", LocalTime.of(10, 0), LocalTime.of(10, 30), Set.of("1A", "1B")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(10, 0), LocalTime.of(10, 30), Set.of("2A", "2B")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(10, 0), LocalTime.of(10, 30), Set.of("3A", "3B")),
+                        new ShiftDemand("Refter", LocalTime.of(12, 0), LocalTime.of(13, 0), Set.of("1A", "1B")),
+                        new ShiftDemand("Refter", LocalTime.of(12, 0), LocalTime.of(13, 0), Set.of("2A", "2B")),
+                        new ShiftDemand("Refter", LocalTime.of(12, 0), LocalTime.of(13, 0), Set.of("3A", "3B")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(12, 0), LocalTime.of(13, 0), Set.of("1A", "2A")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(12, 0), LocalTime.of(13, 0), Set.of("1B", "2B")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(12, 0), LocalTime.of(13, 0), Set.of("3A", "3B")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(14, 45), LocalTime.of(15, 15), Set.of("1A", "1B")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(14, 45), LocalTime.of(15, 15), Set.of("2A", "2B")),
+                        new ShiftDemand("Speelplaats", LocalTime.of(14, 45), LocalTime.of(15, 15), Set.of("3A", "3B"))),
+                List.of("1A", "1B", "2A", "2B", "3A", "3B"),
+                20, // school days (4 weeks)
+                40, // teachers
                 0
         ));
 
@@ -84,33 +67,38 @@ public class DemoDataGenerator {
         }
     }
 
-    public record CountDistribution(int count, double weight) {}
+    /**
+     * One break duty shift per school day at a location, during the given time slot, supervising the given classrooms.
+     * Only teachers attached to one of these classrooms match the shift.
+     */
+    public record ShiftDemand(String location, LocalTime start, LocalTime end, Set<String> classrooms) {}
 
-    public record DemoDataParameters(List<String> locations,
-                                     List<String> requiredSkills,
-                                     List<String> optionalSkills,
-                                     int daysInSchedule,
-                                     int employeeCount,
-                                     List<CountDistribution> optionalSkillDistribution,
-                                     List<CountDistribution> shiftCountDistribution,
-                                     List<CountDistribution> availabilityCountDistribution,
+    public record DemoDataParameters(List<ShiftDemand> shiftDemands,
+                                     List<String> classrooms,
+                                     int schoolDays,
+                                     int teacherCount,
                                      int randomSeed) {}
+
+    private static final String TEACHER_SKILL = "Teacher";
 
     private static final String[] FIRST_NAMES = { "Amy", "Beth", "Carl", "Dan", "Elsa", "Flo", "Gus", "Hugo", "Ivy", "Jay" };
     private static final String[] LAST_NAMES = { "Cole", "Fox", "Green", "Jones", "King", "Li", "Poe", "Rye", "Smith", "Watt" };
-    private static final Duration SHIFT_LENGTH = Duration.ofHours(8);
-    private static final LocalTime MORNING_SHIFT_START_TIME = LocalTime.of(6, 0);
-    private static final LocalTime DAY_SHIFT_START_TIME = LocalTime.of(9, 0);
-    private static final LocalTime AFTERNOON_SHIFT_START_TIME = LocalTime.of(14, 0);
-    private static final LocalTime NIGHT_SHIFT_START_TIME = LocalTime.of(22, 0);
 
-    static final LocalTime[][] SHIFT_START_TIMES_COMBOS = {
-            { MORNING_SHIFT_START_TIME, AFTERNOON_SHIFT_START_TIME },
-            { MORNING_SHIFT_START_TIME, AFTERNOON_SHIFT_START_TIME, NIGHT_SHIFT_START_TIME },
-            { MORNING_SHIFT_START_TIME, DAY_SHIFT_START_TIME, AFTERNOON_SHIFT_START_TIME, NIGHT_SHIFT_START_TIME },
-    };
+    // There is no break duty on Wednesday (Wednesday afternoon is off).
+    private static final Set<DayOfWeek> DAYS_WITHOUT_DUTY = Set.of(DayOfWeek.WEDNESDAY);
 
-    Map<String, List<LocalTime>> locationToShiftStartTimeListMap = new HashMap<>();
+    // The weekdays on which teachers work, from full-time to part-time contracts.
+    // The cycle guarantees enough teachers work every weekday to cover the lunch shifts.
+    private static final List<Set<DayOfWeek>> WORK_PATTERN_CYCLE = List.of(
+            Set.of(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY,
+                    DayOfWeek.FRIDAY), // full-time
+            Set.of(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY,
+                    DayOfWeek.FRIDAY), // full-time
+            Set.of(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY,
+                    DayOfWeek.FRIDAY), // full-time
+            Set.of(DayOfWeek.MONDAY, DayOfWeek.WEDNESDAY, DayOfWeek.FRIDAY), // part-time Mon/Wed/Fri
+            Set.of(DayOfWeek.TUESDAY, DayOfWeek.THURSDAY) // part-time Tue/Thu
+    );
 
     public EmployeeSchedule generateDemoData(DemoData demoData) {
         return generateDemoData(demoData.getParameters());
@@ -119,41 +107,38 @@ public class DemoDataGenerator {
     public EmployeeSchedule generateDemoData(DemoDataParameters parameters) {
         EmployeeSchedule employeeSchedule = new EmployeeSchedule();
 
-        LocalDate startDate = LocalDate.now().with(TemporalAdjusters.nextOrSame(DayOfWeek.MONDAY));
-
         Random random = new Random(parameters.randomSeed);
 
-        int shiftTemplateIndex = 0;
-        for (String location : parameters.locations) {
-            locationToShiftStartTimeListMap.put(location, List.of(SHIFT_START_TIMES_COMBOS[shiftTemplateIndex]));
-            shiftTemplateIndex = (shiftTemplateIndex + 1) % SHIFT_START_TIMES_COMBOS.length;
-        }
+        List<LocalDate> schoolDays = generateSchoolDays(parameters.schoolDays);
 
         List<String> namePermutations = joinAllCombinations(FIRST_NAMES, LAST_NAMES);
         Collections.shuffle(namePermutations, random);
 
-        List<Employee> employees = new ArrayList<>();
-        for (int i = 0; i < parameters.employeeCount; i++) {
-            Set<String> skills = pickSubset(parameters.optionalSkills, random, parameters.optionalSkillDistribution);
-            skills.add(pickRandom(parameters.requiredSkills, random));
-            Employee employee = new Employee(namePermutations.get(i), skills, new LinkedHashSet<>(), new LinkedHashSet<>(), new LinkedHashSet<>());
-            employees.add(employee);
+        List<Employee> teachers = new ArrayList<>(parameters.teacherCount);
+        for (int i = 0; i < parameters.teacherCount; i++) {
+            Set<DayOfWeek> workingDays = WORK_PATTERN_CYCLE.get(i % WORK_PATTERN_CYCLE.size());
+            String classroom = parameters.classrooms.get(i % parameters.classrooms.size());
+            teachers.add(createTeacher(namePermutations.get(i), workingDays, classroom, schoolDays, random));
         }
-        employeeSchedule.setEmployees(employees);
+        // Showcase part-day unavailability: one teacher cannot do lunch duty on the first Thursday,
+        // another misses the morning break on the first Tuesday.
+        addPartDayUnavailability(teachers.get(0), schoolDays, DayOfWeek.THURSDAY,
+                LocalTime.of(12, 15), LocalTime.of(13, 15));
+        addPartDayUnavailability(teachers.get(1), schoolDays, DayOfWeek.TUESDAY,
+                LocalTime.of(9, 45), LocalTime.of(10, 15));
+        employeeSchedule.setEmployees(teachers);
 
         List<Shift> shifts = new LinkedList<>();
-        for (int i = 0; i < parameters.daysInSchedule; i++) {
-            Set<Employee> employeesWithAvailabilitiesOnDay = pickSubset(employees, random,
-                    parameters.availabilityCountDistribution);
-            LocalDate date = startDate.plusDays(i);
-            for (Employee employee : employeesWithAvailabilitiesOnDay) {
-                switch (random.nextInt(3)) {
-                    case 0 -> employee.getUnavailableDates().add(date);
-                    case 1 -> employee.getUndesiredDates().add(date);
-                    case 2 -> employee.getDesiredDates().add(date);
-                }
+        for (LocalDate schoolDay : schoolDays) {
+            if (DAYS_WITHOUT_DUTY.contains(schoolDay.getDayOfWeek())) {
+                continue;
             }
-            shifts.addAll(generateShiftsForDay(parameters, date, random));
+            for (ShiftDemand shiftDemand : parameters.shiftDemands) {
+                Shift shift = new Shift(schoolDay.atTime(shiftDemand.start()), schoolDay.atTime(shiftDemand.end()),
+                        shiftDemand.location(), TEACHER_SKILL);
+                shift.setClassrooms(shiftDemand.classrooms());
+                shifts.add(shift);
+            }
         }
         AtomicInteger countShift = new AtomicInteger();
         shifts.forEach(s -> s.setId(Integer.toString(countShift.getAndIncrement())));
@@ -162,60 +147,55 @@ public class DemoDataGenerator {
         return employeeSchedule;
     }
 
-    private List<Shift> generateShiftsForDay(DemoDataParameters parameters, LocalDate date, Random random) {
-        List<Shift> shifts = new LinkedList<>();
-        for (String location : parameters.locations) {
-            List<LocalTime> shiftStartTimes = locationToShiftStartTimeListMap.get(location);
-            for (LocalTime shiftStartTime : shiftStartTimes) {
-                LocalDateTime shiftStartDateTime = date.atTime(shiftStartTime);
-                LocalDateTime shiftEndDateTime = shiftStartDateTime.plus(SHIFT_LENGTH);
-                shifts.addAll(generateShiftForTimeslot(parameters, shiftStartDateTime, shiftEndDateTime, location, random));
+    /**
+     * Returns the weekdays (no weekends) starting from the next Monday, since lunch shifts only occur on school days.
+     */
+    private List<LocalDate> generateSchoolDays(int schoolDayCount) {
+        List<LocalDate> schoolDays = new ArrayList<>(schoolDayCount);
+        LocalDate date = LocalDate.now().with(TemporalAdjusters.nextOrSame(DayOfWeek.MONDAY));
+        while (schoolDays.size() < schoolDayCount) {
+            if (date.getDayOfWeek() != DayOfWeek.SATURDAY && date.getDayOfWeek() != DayOfWeek.SUNDAY) {
+                schoolDays.add(date);
             }
+            date = date.plusDays(1);
         }
-        return shifts;
+        return schoolDays;
     }
 
-    private List<Shift> generateShiftForTimeslot(DemoDataParameters parameters,
-            LocalDateTime timeslotStart, LocalDateTime timeslotEnd, String location,
+    private Employee createTeacher(String name, Set<DayOfWeek> workingDays, String classroom, List<LocalDate> schoolDays,
             Random random) {
-        var shiftCount = pickCount(random, parameters.shiftCountDistribution);
+        Set<LocalDate> unavailableDates = new LinkedHashSet<>();
+        Set<LocalDate> undesiredDates = new LinkedHashSet<>();
+        Set<LocalDate> desiredDates = new LinkedHashSet<>();
 
-        List<Shift> shifts = new LinkedList<>();
-        for (int i = 0; i < shiftCount; i++) {
-            String requiredSkill;
-            if (random.nextBoolean()) {
-                requiredSkill = pickRandom(parameters.requiredSkills, random);
+        // Weekdays that are not part of the teacher's contract are unavailable.
+        List<LocalDate> workingDates = new ArrayList<>();
+        for (LocalDate schoolDay : schoolDays) {
+            if (workingDays.contains(schoolDay.getDayOfWeek())) {
+                workingDates.add(schoolDay);
             } else {
-                requiredSkill = pickRandom(parameters.optionalSkills, random);
+                unavailableDates.add(schoolDay);
             }
-            shifts.add(new Shift(timeslotStart, timeslotEnd, location, requiredSkill));
         }
-        return shifts;
+
+        // Pick distinct working dates for an extra day off, an undesired date and a desired date.
+        List<LocalDate> shuffledWorkingDates = new ArrayList<>(workingDates);
+        Collections.shuffle(shuffledWorkingDates, random);
+        unavailableDates.add(shuffledWorkingDates.get(0)); // for example a training day or a doctor's appointment
+        undesiredDates.add(shuffledWorkingDates.get(1));
+        desiredDates.add(shuffledWorkingDates.get(2));
+
+        return new Employee(name, Set.of(TEACHER_SKILL), classroom, unavailableDates, new ArrayList<>(), undesiredDates,
+                desiredDates);
     }
 
-    private <T> T pickRandom(List<T> source, Random random) {
-        return source.get(random.nextInt(source.size()));
-    }
-
-    private int pickCount(Random random, List<CountDistribution> countDistribution) {
-        double probabilitySum = 0;
-        for (var possibility : countDistribution) {
-            probabilitySum += possibility.weight;
-        }
-        var choice = random.nextDouble(probabilitySum);
-        int numOfItems = 0;
-        while (choice >= countDistribution.get(numOfItems).weight) {
-            choice -= countDistribution.get(numOfItems).weight;
-            numOfItems++;
-        }
-        return countDistribution.get(numOfItems).count;
-    }
-
-    private <T> Set<T> pickSubset(List<T> sourceSet, Random random, List<CountDistribution> countDistribution) {
-        var count = pickCount(random, countDistribution);
-        List<T> items = new ArrayList<>(sourceSet);
-        Collections.shuffle(items, random);
-        return new HashSet<>(items.subList(0, count));
+    private void addPartDayUnavailability(Employee teacher, List<LocalDate> schoolDays, DayOfWeek dayOfWeek,
+            LocalTime from, LocalTime to) {
+        schoolDays.stream()
+                .filter(schoolDay -> schoolDay.getDayOfWeek() == dayOfWeek
+                        && !teacher.getUnavailableDates().contains(schoolDay))
+                .findFirst()
+                .ifPresent(date -> teacher.getUnavailablePeriods().add(new UnavailablePeriod(date, from, to)));
     }
 
     private List<String> joinAllCombinations(String[]... partArrays) {
