@@ -44,8 +44,11 @@ $(document).ready(function () {
     })
 
     setupAjax();
-    loadedSchedule = generateScheduleFromConfig(scheduleConfig);
-    renderSchedule(loadedSchedule);
+    loadInitialScheduleConfig(function (config) {
+        scheduleConfig = config;
+        loadedSchedule = generateScheduleFromConfig(scheduleConfig);
+        renderSchedule(loadedSchedule);
+    });
 });
 
 function setupAjax() {
@@ -129,7 +132,16 @@ function refreshSchedule() {
 
 function renderSchedule(schedule) {
     refreshSolvingButtons(schedule.solverStatus != null && schedule.solverStatus !== "NOT_SOLVING");
-    $("#score").text("Score: " + (schedule.score == null ? "?" : schedule.score));
+    const scoreElement = $("#score");
+    scoreElement.text("Score: " + (schedule.score == null ? "?" : schedule.score));
+    scoreElement.removeClass("text-danger text-success");
+    if (schedule.score != null) {
+        const hardScore = parseFloat((schedule.score.match(/(-?\d+(\.\d+)?)hard/) || [null, "0"])[1]);
+        scoreElement.addClass(hardScore < 0 ? "text-danger" : "text-success");
+        scoreElement.attr("title", hardScore < 0
+            ? "Nog geen haalbare oplossing: er zijn harde overtredingen (bijv. een leerkracht op een vrije dag)."
+            : "Haalbare oplossing: geen harde overtredingen.");
+    }
 
     renderRoster(schedule);
 
@@ -262,7 +274,9 @@ function comboColor(classrooms) {
     for (let i = 0; i < key.length; i++) {
         hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
     }
-    return `hsl(${hash % 360}, 70%, 78%)`;
+    // The golden angle spreads similar names far apart on the color wheel.
+    const hue = Math.round((hash * 137.508) % 360);
+    return `hsl(${hue}, 70%, 78%)`;
 }
 
 function renderRoster(schedule) {
@@ -385,6 +399,11 @@ function renderRoster(schedule) {
                         }
                         td.append(chip);
                     });
+                if (td.children().length === 0) {
+                    // This shift does not occur on this day (excluded weekday).
+                    td.addClass("roster-no-lunch text-center align-middle")
+                        .append($("<span/>").text("–"));
+                }
                 tr.append(td);
             });
             tbody.append(tr);
@@ -413,22 +432,25 @@ function defaultScheduleConfig() {
         "Gus Poe", "Hugo Rye", "Ivy Smith", "Jay Watt", "Amy Fox", "Beth Green"];
     return {
         weeks: 2,
-        daysWithoutDuty: [3], // Wednesday
-        // One shift per school day per entry: location, hour and the classrooms it supervises.
+        // One shift per school day per entry: location, hour, the classrooms it supervises
+        // and the weekdays on which the shift does not occur (excludedDays).
+        // Wednesday afternoon is off: only the morning break still happens on Wednesday.
         shifts: [
-            {location: "Speelplaats", start: "10:00", end: "10:30", classrooms: ["1A", "1B"]},
-            {location: "Speelplaats", start: "10:00", end: "10:30", classrooms: ["2A", "2B"]},
-            {location: "Refter", start: "12:00", end: "13:00", classrooms: ["1A", "1B"]},
-            {location: "Refter", start: "12:00", end: "13:00", classrooms: ["2A", "2B"]},
-            {location: "Speelplaats", start: "12:00", end: "13:00", classrooms: ["1A", "2A"]},
-            {location: "Speelplaats", start: "12:00", end: "13:00", classrooms: ["1B", "2B"]},
-            {location: "Speelplaats", start: "14:45", end: "15:15", classrooms: ["1A", "1B"]},
-            {location: "Speelplaats", start: "14:45", end: "15:15", classrooms: ["2A", "2B"]}
+            {location: "Speelplaats", start: "10:00", end: "10:30", classrooms: ["1A", "1B"], teachers: 1, excludedDays: []},
+            {location: "Speelplaats", start: "10:00", end: "10:30", classrooms: ["2A", "2B"], teachers: 1, excludedDays: []},
+            {location: "Refter", start: "12:00", end: "13:00", classrooms: ["1A", "1B"], teachers: 1, excludedDays: [3]},
+            {location: "Refter", start: "12:00", end: "13:00", classrooms: ["2A", "2B"], teachers: 1, excludedDays: [3]},
+            {location: "Speelplaats", start: "12:00", end: "13:00", classrooms: ["1A", "2A"], teachers: 1, excludedDays: [3]},
+            {location: "Speelplaats", start: "12:00", end: "13:00", classrooms: ["1B", "2B"], teachers: 1, excludedDays: [3]},
+            {location: "Speelplaats", start: "14:45", end: "15:15", classrooms: ["1A", "1B"], teachers: 1, excludedDays: [3]},
+            {location: "Speelplaats", start: "14:45", end: "15:15", classrooms: ["2A", "2B"], teachers: 1, excludedDays: [3]}
         ],
         teachers: names.map((name, i) => ({
             name: name,
             workingDays: [...patterns[i % patterns.length]],
             classroom: classrooms[i % classrooms.length],
+            undesiredDays: [],
+            desiredDays: [],
             exceptions: []
         }))
     };
@@ -440,9 +462,16 @@ function loadScheduleConfig() {
         if (stored != null) {
             const config = JSON.parse(stored);
             if (Array.isArray(config.shifts) && Array.isArray(config.teachers)) {
-                // Renamed in the break duty version
-                if (!Array.isArray(config.daysWithoutDuty)) {
-                    config.daysWithoutDuty = config.daysWithoutLunch || [3];
+                // Migrated: day exclusion moved from the whole schedule to each shift
+                const legacyExcluded = config.daysWithoutDuty || config.daysWithoutLunch;
+                if (Array.isArray(legacyExcluded)) {
+                    config.shifts.forEach(shiftDef => {
+                        if (!Array.isArray(shiftDef.excludedDays)) {
+                            shiftDef.excludedDays = [...legacyExcluded];
+                        }
+                    });
+                    delete config.daysWithoutDuty;
+                    delete config.daysWithoutLunch;
                 }
                 return config;
             }
@@ -450,7 +479,34 @@ function loadScheduleConfig() {
     } catch (e) {
         console.warn("Ignoring invalid stored config.", e);
     }
-    return defaultScheduleConfig();
+    return null;
+}
+
+function isValidScheduleConfig(config) {
+    return config != null && Array.isArray(config.shifts) && Array.isArray(config.teachers);
+}
+
+/**
+ * Loads the config at startup: the config saved in the browser (localStorage) wins;
+ * otherwise the demo config file demo-config.json is loaded; if that file is missing
+ * (for example a fresh checkout), the built-in default config is used.
+ */
+function loadInitialScheduleConfig(onLoaded) {
+    if (scheduleConfig != null) {
+        onLoaded(scheduleConfig);
+        return;
+    }
+    $.getJSON("demo-config.json", function (config) {
+        if (isValidScheduleConfig(config)) {
+            onLoaded(config);
+        } else {
+            console.warn("Invalid demo-config.json, using the built-in default config.");
+            onLoaded(defaultScheduleConfig());
+        }
+    }).fail(function () {
+        console.warn("demo-config.json not found, using the built-in default config.");
+        onLoaded(defaultScheduleConfig());
+    });
 }
 
 function openDataEditor() {
@@ -488,7 +544,8 @@ function exceptionRow(exception) {
     const toInput = $("<input type=\"time\" class=\"form-control cfg-exc-to\" style=\"max-width: 6rem\" "
         + "title=\"Enkel voor vrij-uitzonderingen: einde van de niet-beschikbare periode. Leeg betekent de hele dag.\"/>")
         .val(exception.to || "");
-    const repeatsInput = $("<input type=\"number\" min=\"0\" max=\"52\" class=\"form-control cfg-exc-repeats\" style=\"max-width: 5rem\"/>")
+    const repeatsInput = $("<input type=\"number\" min=\"0\" max=\"52\" class=\"form-control cfg-exc-repeats\" style=\"max-width: 5rem\" "
+        + "title=\"0 = elke week herhalen op deze weekdag; een hoger getal herhaalt de datum dat aantal extra weken\"/>")
         .val(exception.repeats || 0);
     const removeButton = $("<button type=\"button\" class=\"btn btn-outline-danger btn-sm\" title=\"Uitzondering verwijderen\">"
         + "<span class=\"fas fa-trash\"></span></button>");
@@ -512,6 +569,15 @@ function teacherCard(teacher) {
         + "style=\"max-width: 7rem\" placeholder=\"bv. 1A\"/>").val(teacher.classroom || ""));
     header.append($("<span class=\"small text-muted\">werkt:</span>"));
     dayCheckboxes("cfg-working-day", teacher.workingDays).forEach(check => header.append(check));
+
+    header.append($("<span class=\"small text-muted ms-2\">|</span>"));
+    header.append($("<span class=\"small text-muted\">liever niet:</span>"));
+    dayCheckboxes("cfg-undesired-day", teacher.undesiredDays || []).forEach(check => header.append(check));
+
+    header.append($("<span class=\"small text-muted ms-2\">|</span>"));
+    header.append($("<span class=\"small text-muted\">voorkeur:</span>"));
+    dayCheckboxes("cfg-desired-day", teacher.desiredDays || []).forEach(check => header.append(check));
+
     const removeButton = $("<button type=\"button\" class=\"btn btn-outline-danger btn-sm ms-auto\" title=\"Leerkracht verwijderen\">"
         + "<span class=\"fas fa-trash\"></span></button>");
     removeButton.click(() => card.remove());
@@ -536,8 +602,16 @@ function shiftRow(shiftDef) {
         .val(shiftDef.start)));
     row.append($("<td/>").append($("<input type=\"time\" class=\"form-control cfg-shift-end\"/>")
         .val(shiftDef.end)));
-    row.append($("<td/>").append($("<input class=\"form-control cfg-shift-classrooms\" placeholder=\"bv. 1A, 1B\"/>")
+    row.append($("<td/>").append($("<input class=\"form-control cfg-shift-classrooms\" "
+        + "placeholder=\"bv. 1A, 1B (leeg = alle klassen)\"/>")
         .val((shiftDef.classrooms || []).join(", "))));
+    row.append($("<td/>").append($("<input type=\"number\" min=\"1\" max=\"10\" "
+        + "class=\"form-control cfg-shift-teachers\" title=\"Aantal leerkrachten dat tegelijk op deze dienst nodig is\"/>")
+        .val(shiftDef.teachers || 1)));
+    const excludedCell = $("<td class=\"text-nowrap\"/>");
+    dayCheckboxes("cfg-shift-excluded-day", shiftDef.excludedDays || [])
+        .forEach(check => excludedCell.append(check));
+    row.append(excludedCell);
     const removeButton = $("<button type=\"button\" class=\"btn btn-outline-danger btn-sm\" title=\"Dienst verwijderen\">"
         + "<span class=\"fas fa-trash\"></span></button>");
     removeButton.click(() => row.remove());
@@ -557,32 +631,34 @@ function renderDataEditor() {
         .append($("<label class=\"form-label\"/>").text("Weken"))
         .append($("<input id=\"cfgWeeks\" type=\"number\" min=\"1\" max=\"8\" class=\"form-control\" style=\"max-width: 6rem\"/>")
             .val(config.weeks)));
-    const noDuty = $("<div id=\"cfgDaysWithoutDuty\"/>")
-        .append($("<label class=\"form-label d-block\"/>").text("Geen toezicht op"));
-    dayCheckboxes("cfg-no-duty-day", config.daysWithoutDuty).forEach(check => noDuty.append(check));
-    settingsRow.append(noDuty);
     settings.children().first().append($("<h5 class=\"card-title\"/>").text("Planning"), settingsRow);
     body.append(settings);
 
-    // Shifts: each entry is one shift per school day, with its own hour and classrooms
+    // Shifts: each entry is one shift per school day, with its own hour, classrooms and excluded days
     const shiftsCard = $("<div class=\"card mb-3\"/>").append($("<div class=\"card-body\"/>")
         .append($("<h5 class=\"card-title\"/>").text("Diensten"))
         .append($("<p class=\"card-text small text-muted\"/>")
-            .text("Elke rij is één toezichtdienst op elke schooldag: waar ze is, om welk uur "
-                + "en welke klassen ze dekt.")));
+            .text("Elke rij is één toezichtdienst op elke schooldag: waar ze is, om welk uur, "
+                + "welke klassen ze dekt en hoeveel leerkrachten er tegelijk nodig zijn. "
+                + "Laat het klassenveld leeg om de dienst "
+                + "voor alle klassen te laten gelden. Vink dagen aan bij \"Niet op\" om de dienst "
+                + "op die weekdagen over te slaan (bijvoorbeeld geen middagtoezicht op woensdag).")));
     const shiftsTable = $("<table class=\"table table-sm align-middle mb-1\"/>")
         .append($("<thead/>").append($("<tr/>")
             .append($("<th/>").text("Locatie"))
             .append($("<th style=\"width: 7rem\"/>").text("Start"))
             .append($("<th style=\"width: 7rem\"/>").text("Einde"))
             .append($("<th/>").text("Klassen (gescheiden door komma's)"))
+            .append($("<th style=\"width: 6rem\"/>").text("Leerkrachten"))
+            .append($("<th/>").text("Niet op"))
             .append($("<th style=\"width: 3rem\"/>"))));
     const shiftsBody = $("<tbody id=\"cfgShifts\"/>");
     config.shifts.forEach(shiftDef => shiftsBody.append(shiftRow(shiftDef)));
     shiftsTable.append(shiftsBody);
     const addShiftButton = $("<button type=\"button\" class=\"btn btn-outline-secondary btn-sm\">"
         + "<span class=\"fas fa-plus\"></span> Dienst</button>");
-    addShiftButton.click(() => shiftsBody.append(shiftRow({location: "", start: "12:00", end: "13:00", classrooms: []})));
+    addShiftButton.click(() => shiftsBody.append(
+        shiftRow({location: "", start: "12:00", end: "13:00", classrooms: [], teachers: 1})));
     shiftsCard.children().first().append(shiftsTable, addShiftButton);
     body.append(shiftsCard);
 
@@ -590,10 +666,14 @@ function renderDataEditor() {
     const teachersCard = $("<div class=\"card\"/>").append($("<div class=\"card-body\"/>")
         .append($("<h5 class=\"card-title\"/>").text("Leerkrachten"))
         .append($("<p class=\"card-text small text-muted\"/>")
-            .text("Een leerkracht past enkel bij diensten die zijn of haar eigen klas dekken. "
-                + "Niet-aangevinkte weekdagen worden niet-beschikbare dagen. Een vrij-uitzondering is een "
-                + "eenmalige datum (bijvoorbeeld een doktersafspraak) die eventueel wekelijks herhaald kan worden; "
-                + "vul van/tot-uren in om ze te beperken tot een deel van de dag.")));
+            .text("Een leerkracht past enkel bij diensten die zijn of haar eigen klas dekken; "
+                + "laat de klas leeg om de leerkracht voor elke dienst in te zetten. "
+                + "Niet-aangevinkte weekdagen worden niet-beschikbare dagen. "
+                + "Dagen onder \"Liever niet\" of \"Voorkeur\" sturen de solver weekelijks bij "
+                + "(zachte voorkeur). Een uitzondering geldt op een datum en wordt op dezelfde weekdag "
+                + "wekelijks herhaald zolang de herhaling 0 is; een hoger getal herhaalt de datum "
+                + "dat aantal extra weken. "
+                + "Vul van/tot-uren in om een vrij-uitzondering te beperken tot een deel van de dag.")));
     // Suggest the classrooms used by the shifts when filling in a teacher's classroom
     const classroomSuggestions = [...new Set(config.shifts.flatMap(shiftDef => shiftDef.classrooms || []))].sort();
     const classroomList = $("<datalist id=\"cfgClassroomList\"/>");
@@ -612,7 +692,6 @@ function renderDataEditor() {
 function readDataEditor() {
     const config = {
         weeks: Math.max(1, parseInt($("#cfgWeeks").val()) || 1),
-        daysWithoutDuty: $("#cfgDaysWithoutDuty input:checked").map((i, e) => parseInt(e.value)).get(),
         shifts: [],
         teachers: []
     };
@@ -625,7 +704,9 @@ function readDataEditor() {
                 location: location,
                 start: $(this).find(".cfg-shift-start").val() || "12:00",
                 end: $(this).find(".cfg-shift-end").val() || "13:00",
-                classrooms: classrooms
+                classrooms: classrooms,
+                teachers: Math.max(1, parseInt($(this).find(".cfg-shift-teachers").val()) || 1),
+                excludedDays: $(this).find(".cfg-shift-excluded-day:checked").map((i, e) => parseInt(e.value)).get()
             });
         }
     });
@@ -652,6 +733,8 @@ function readDataEditor() {
             name: name,
             classroom: $(this).find(".cfg-teacher-classroom").val().trim(),
             workingDays: workingDays,
+            undesiredDays: $(this).find(".cfg-undesired-day:checked").map((i, e) => parseInt(e.value)).get(),
+            desiredDays: $(this).find(".cfg-desired-day:checked").map((i, e) => parseInt(e.value)).get(),
             exceptions: exceptions
         });
     });
@@ -695,15 +778,39 @@ function generateScheduleFromConfig(config) {
                 unavailableDates.add(schoolDay.toString());
             }
         });
-        // One-off exceptions, optionally repeated weekly.
+        // Weekly recurring soft day preferences.
+        schoolDays.forEach(schoolDay => {
+            if ((teacher.undesiredDays || []).includes(schoolDay.dayOfWeek().value())) {
+                undesiredDates.add(schoolDay.toString());
+            }
+            if ((teacher.desiredDays || []).includes(schoolDay.dayOfWeek().value())) {
+                desiredDates.add(schoolDay.toString());
+            }
+        });
+        // Exceptions, optionally repeated weekly.
+        // repeats = 0 repeats the exception every week on the same weekday throughout the schedule;
+        // repeats = n applies it on the given date plus n extra weeks.
         teacher.exceptions.forEach(exception => {
-            for (let i = 0; i <= exception.repeats; i++) {
-                const occurrence = JSJoda.LocalDate.parse(exception.date).plusWeeks(i);
-                if (occurrence.compareTo(startMonday) < 0) {
-                    continue;
+            const baseDate = JSJoda.LocalDate.parse(exception.date);
+            const occurrences = [];
+            if (exception.repeats > 0) {
+                for (let i = 0; i <= exception.repeats; i++) {
+                    occurrences.push(baseDate.plusWeeks(i));
                 }
-                if (occurrence.compareTo(lastDay) > 0) {
-                    break;
+            } else {
+                // Every occurrence of this weekday within the schedule.
+                let occurrence = baseDate;
+                while (occurrence.minusWeeks(1).compareTo(startMonday) >= 0) {
+                    occurrence = occurrence.minusWeeks(1);
+                }
+                while (occurrence.compareTo(lastDay) <= 0) {
+                    occurrences.push(occurrence);
+                    occurrence = occurrence.plusWeeks(1);
+                }
+            }
+            occurrences.forEach(occurrence => {
+                if (occurrence.compareTo(startMonday) < 0 || occurrence.compareTo(lastDay) > 0) {
+                    return;
                 }
                 if (exception.type === "unavailable" && exception.from && exception.to) {
                     // Part of the day off-duty instead of the whole day
@@ -713,7 +820,7 @@ function generateScheduleFromConfig(config) {
                         : exception.type === "desired" ? desiredDates : unavailableDates;
                     target.add(occurrence.toString());
                 }
-            }
+            });
         });
         return {
             name: teacher.name,
@@ -726,22 +833,32 @@ function generateScheduleFromConfig(config) {
         };
     });
 
+    // An empty classrooms field means the shift supervises all classrooms.
+    const allClassrooms = [...new Set([
+        ...config.teachers.map(teacher => teacher.classroom),
+        ...config.shifts.flatMap(shiftDef => shiftDef.classrooms || [])
+    ].filter(classroom => classroom != null && classroom.length > 0))].sort();
+
     const shifts = [];
     let id = 0;
     schoolDays.forEach(schoolDay => {
-        if (config.daysWithoutDuty.includes(schoolDay.dayOfWeek().value())) {
-            return;
-        }
         config.shifts.forEach(shiftDef => {
-            shifts.push({
-                id: String(id++),
-                start: schoolDay.atTime(JSJoda.LocalTime.parse(shiftDef.start)).toString(),
-                end: schoolDay.atTime(JSJoda.LocalTime.parse(shiftDef.end)).toString(),
-                location: shiftDef.location,
-                requiredSkill: "Teacher",
-                classrooms: shiftDef.classrooms,
-                employee: null
-            });
+            if ((shiftDef.excludedDays || []).includes(schoolDay.dayOfWeek().value())) {
+                return;
+            }
+            // A shift that needs several teachers at once becomes that many shifts;
+            // each one gets its own teacher.
+            for (let teacherSeat = 0; teacherSeat < (shiftDef.teachers || 1); teacherSeat++) {
+                shifts.push({
+                    id: String(id++),
+                    start: schoolDay.atTime(JSJoda.LocalTime.parse(shiftDef.start)).toString(),
+                    end: schoolDay.atTime(JSJoda.LocalTime.parse(shiftDef.end)).toString(),
+                    location: shiftDef.location,
+                    requiredSkill: "Teacher",
+                    classrooms: shiftDef.classrooms.length > 0 ? shiftDef.classrooms : allClassrooms,
+                    employee: null
+                });
+            }
         });
     });
 
@@ -760,6 +877,8 @@ function solve() {
 }
 
 function refreshSolvingButtons(solving) {
+    // While solving, the roster shows the best solution so far and keeps refreshing every 2 seconds.
+    $("#solvingStatus").text(solving ? "Bezig met oplossen… het rooster wordt nog verbeterd." : "");
     if (solving) {
         $("#solveButton").hide();
         $("#stopSolvingButton").show();

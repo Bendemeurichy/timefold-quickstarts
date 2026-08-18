@@ -28,7 +28,11 @@ public class Shift {
      */
     private Set<String> classrooms;
 
-    @PlanningVariable
+    /**
+     * The teacher assigned to this shift. May stay unassigned when no teacher can cover it:
+     * an unassigned shift is better than an impossible assignment.
+     */
+    @PlanningVariable(allowsUnassigned = true)
     private Employee employee;
 
     public Shift() {

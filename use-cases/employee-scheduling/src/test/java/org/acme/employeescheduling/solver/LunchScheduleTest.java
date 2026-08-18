@@ -115,6 +115,62 @@ class LunchScheduleTest {
         }
     }
 
+    @Test
+    @Timeout(120)
+    void notEnoughTeachersLeavesShiftsUnassignedInsteadOfDoubleBooking() {
+        // Two shifts at the exact same time, but only one teacher:
+        // a teacher can not be in two places at once, so one of the shifts must stay unassigned.
+        Employee amy = teacher("Amy", "1A", Set.of(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY,
+                DayOfWeek.THURSDAY, DayOfWeek.FRIDAY));
+        Shift refter = new Shift("0", MONDAY.atTime(LUNCH_START), MONDAY.atTime(LUNCH_END), "Refter", TEACHER_SKILL,
+                null);
+        refter.setClassrooms(Set.of("1A", "1B"));
+        Shift speelplaats = new Shift("1", MONDAY.atTime(LUNCH_START), MONDAY.atTime(LUNCH_END), "Speelplaats",
+                TEACHER_SKILL, null);
+        speelplaats.setClassrooms(Set.of("1A", "1B"));
+
+        EmployeeSchedule problem = new EmployeeSchedule(List.of(amy), List.of(refter, speelplaats));
+
+        SolverFactory<EmployeeSchedule> solverFactory = SolverFactory.create(solverConfig);
+        Solver<EmployeeSchedule> solver = solverFactory.buildSolver();
+        EmployeeSchedule solution = solver.solve(problem);
+
+        assertEquals(1, solution.getShifts().stream().filter(shift -> amy.equals(shift.getEmployee())).count(),
+                "Amy can only do one of the two simultaneous shifts");
+        assertEquals(1, solution.getShifts().stream().filter(shift -> shift.getEmployee() == null).count(),
+                "The other shift must stay unassigned");
+    }
+
+    @Test
+    @Timeout(120)
+    void consecutiveShiftsCanBeAssignedToSameWorkingTeacherRatherThanUnavailableTeacher() {
+        // Amy works on Monday; Beth is off on Monday.
+        // Two consecutive shifts on Monday (10:00-10:30, 10:30-11:00).
+        // Amy can take both consecutive shifts without violating any constraint;
+        // Beth should NOT be scheduled on her day off.
+        Employee amy = teacher("Amy", "1A", Set.of(DayOfWeek.MONDAY));
+        Employee beth = teacher("Beth", "1A", Set.of(DayOfWeek.TUESDAY)); // unavailable on Monday
+
+        Shift shift1 = new Shift("0", MONDAY.atTime(LocalTime.of(10, 0)), MONDAY.atTime(LocalTime.of(10, 30)),
+                "Speelplaats", TEACHER_SKILL, null);
+        shift1.setClassrooms(Set.of("1A"));
+        Shift shift2 = new Shift("1", MONDAY.atTime(LocalTime.of(10, 30)), MONDAY.atTime(LocalTime.of(11, 0)),
+                "Speelplaats", TEACHER_SKILL, null);
+        shift2.setClassrooms(Set.of("1A"));
+
+        EmployeeSchedule problem = new EmployeeSchedule(List.of(amy, beth), List.of(shift1, shift2));
+
+        SolverFactory<EmployeeSchedule> solverFactory = SolverFactory.create(solverConfig);
+        Solver<EmployeeSchedule> solver = solverFactory.buildSolver();
+        EmployeeSchedule solution = solver.solve(problem);
+
+        assertTrue(solution.getScore().isFeasible(), "Solution should be feasible with score 0hard");
+        assertEquals(2, solution.getShifts().stream().filter(shift -> amy.equals(shift.getEmployee())).count(),
+                "Amy should be assigned to both consecutive shifts on her working day");
+        assertEquals(0, solution.getShifts().stream().filter(shift -> beth.equals(shift.getEmployee())).count(),
+                "Beth should not be scheduled on her day off");
+    }
+
     private Employee teacher(String name, String classroom, Set<DayOfWeek> workingDays,
             LocalDate... extraUnavailableDates) {
         Set<LocalDate> unavailableDates = new LinkedHashSet<>();

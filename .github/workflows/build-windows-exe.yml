@@ -3,11 +3,15 @@ name: Build Windows executable
 # Builds the employee-scheduling app as a portable, native Windows .exe.
 # Native images cannot be cross-compiled, so this runs on a Windows runner.
 #
+# Every successful build creates a new GitHub Release with the zip attached:
+#   - a tag push (win-v*) releases under that tag;
+#   - a manual run releases under an automatic tag: win-v0.0.<run number>.
+#
 # How to use:
 #   1. Push your changes to your fork.
 #   2. Run this workflow manually (Actions tab > "Build Windows executable" > "Run workflow"),
-#      or push a tag like "win-v1.0" to also create a GitHub Release with the zip attached.
-#   3. Distribute dist/employee-scheduling-windows.zip. Users unzip it anywhere
+#      or push a tag like "win-v1.0".
+#   3. Download the zip from the new release on the Releases page. Users unzip it anywhere
 #      (no admin rights needed) and double-click start-employee-scheduling.bat.
 
 on:
@@ -58,8 +62,24 @@ jobs:
           path: dist/employee-scheduling-windows.zip
           retention-days: 30
 
-      - name: Attach zip to GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Resolve release tag
+        shell: pwsh
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          if ($env:REF_TYPE -eq "tag") {
+            $tag = $env:REF_NAME
+          } else {
+            $tag = "win-v0.0.$env:RUN_NUMBER"
+          }
+          "RELEASE_TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      # Every successful build pushes a new release with the zip attached.
+      - name: Create GitHub Release with the zip
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Employee Scheduling ${{ env.RELEASE_TAG }}
           files: dist/employee-scheduling-windows.zip

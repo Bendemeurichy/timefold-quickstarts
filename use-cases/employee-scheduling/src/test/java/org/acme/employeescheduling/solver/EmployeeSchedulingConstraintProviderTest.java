@@ -46,6 +46,11 @@ class EmployeeSchedulingConstraintProviderTest {
                 .given(employee,
                         new Shift("2", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee))
                 .penalizes(0);
+
+        // An unassigned shift can not miss a required skill.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::requiredSkill)
+                .given(new Shift("3", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", null))
+                .penalizes(0);
     }
 
     @Test
@@ -65,6 +70,15 @@ class EmployeeSchedulingConstraintProviderTest {
                 .given(teacher, shift)
                 .penalizes(1);
 
+        // A teacher without a classroom can be scheduled for every shift.
+        Employee teacherWithoutClassroom = new Employee("Beth", Set.of("Teacher"), null, null, null, null);
+        Shift shiftWithoutClassroomTeacher = new Shift("2", DAY_START_TIME, DAY_END_TIME, "Refter", "Teacher",
+                teacherWithoutClassroom);
+        shiftWithoutClassroomTeacher.setClassrooms(Set.of("2A"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
+                .given(teacherWithoutClassroom, shiftWithoutClassroomTeacher)
+                .penalizes(0);
+
         // A shift without classrooms matches any teacher.
         shift.setClassrooms(null);
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
@@ -73,6 +87,26 @@ class EmployeeSchedulingConstraintProviderTest {
         shift.setClassrooms(Collections.emptySet());
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
                 .given(teacher, shift)
+                .penalizes(0);
+
+        // An unassigned shift can not be in the wrong classroom.
+        shift.setClassrooms(Set.of("2A"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
+                .given(new Shift("3", DAY_START_TIME, DAY_END_TIME, "Refter", "Teacher", null))
+                .penalizes(0);
+    }
+
+    @Test
+    void unassignedShift() {
+        Employee employee = new Employee("Amy", null, null, null, null);
+        // A shift without a teacher is penalized, so the solver only leaves shifts
+        // unassigned when every possible assignment breaks a hard constraint.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::unassignedShift)
+                .given(new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", null))
+                .penalizes(1);
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::unassignedShift)
+                .given(employee,
+                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee))
                 .penalizes(0);
     }
 
@@ -84,29 +118,6 @@ class EmployeeSchedulingConstraintProviderTest {
                 .given(employee1, employee2,
                         new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
                         new Shift("2", DAY_START_TIME, DAY_END_TIME, "Location 2", "Skill", employee1))
-                .penalizesBy((int) Duration.ofHours(8).toMinutes());
-
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::noOverlappingShifts)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
-                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "Location 2", "Skill", employee2))
-                .penalizes(0);
-
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::noOverlappingShifts)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
-                        new Shift("2", AFTERNOON_START_TIME, AFTERNOON_END_TIME, "Location 2", "Skill", employee1))
-                .penalizesBy((int) Duration.ofHours(4).toMinutes());
-    }
-
-    @Test
-    void oneShiftPerDay() {
-        Employee employee1 = new Employee("Amy", null, null, null, null);
-        Employee employee2 = new Employee("Beth", null, null, null, null);
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::noOverlappingShifts)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
-                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "Location 2", "Skill", employee1))
                 .penalizes(1);
 
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::noOverlappingShifts)
@@ -121,47 +132,11 @@ class EmployeeSchedulingConstraintProviderTest {
                         new Shift("2", AFTERNOON_START_TIME, AFTERNOON_END_TIME, "Location 2", "Skill", employee1))
                 .penalizes(1);
 
+        // Consecutive shifts directly after one another (end == start) do not overlap and can be assigned to the same teacher.
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::noOverlappingShifts)
-                .given(employee1, employee2,
+                .given(employee1,
                         new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
-                        new Shift("2", DAY_START_TIME.plusDays(1), DAY_END_TIME.plusDays(1), "Location 2", "Skill", employee1))
-                .penalizes(0);
-    }
-
-    @Test
-    void atLeast10HoursBetweenConsecutiveShifts() {
-        Employee employee1 = new Employee("Amy", null, null, null, null);
-        Employee employee2 = new Employee("Beth", null, null, null, null);
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::atLeast10HoursBetweenTwoShifts)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
-                        new Shift("2", AFTERNOON_END_TIME, DAY_START_TIME.plusDays(1), "Location 2", "Skill", employee1))
-                .penalizesBy(360);
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::atLeast10HoursBetweenTwoShifts)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
-                        new Shift("2", DAY_END_TIME, DAY_START_TIME.plusDays(1), "Location 2", "Skill", employee1))
-                .penalizesBy(600);
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::atLeast10HoursBetweenTwoShifts)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_END_TIME, DAY_START_TIME.plusDays(1), "Location", "Skill", employee1),
-                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "Location 2", "Skill", employee1))
-                .penalizesBy(600);
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::atLeast10HoursBetweenTwoShifts)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
-                        new Shift("2", DAY_END_TIME.plusHours(10), DAY_START_TIME.plusDays(1), "Location 2", "Skill",
-                                employee1))
-                .penalizes(0);
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::atLeast10HoursBetweenTwoShifts)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
-                        new Shift("2", AFTERNOON_END_TIME, DAY_START_TIME.plusDays(1), "Location 2", "Skill", employee2))
-                .penalizes(0);
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::noOverlappingShifts)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
-                        new Shift("2", DAY_START_TIME.plusDays(1), DAY_END_TIME.plusDays(1), "Location 2", "Skill", employee1))
+                        new Shift("2", DAY_END_TIME, DAY_END_TIME.plusHours(1), "Location 2", "Skill", employee1))
                 .penalizes(0);
     }
 
@@ -172,11 +147,7 @@ class EmployeeSchedulingConstraintProviderTest {
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::unavailableEmployee)
                 .given(employee1, employee2,
                         new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1))
-                .penalizesBy((int) Duration.ofHours(8).toMinutes());
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::unavailableEmployee)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_START_TIME.minusDays(1), DAY_END_TIME, "Location", "Skill", employee1))
-                .penalizesBy((int) Duration.ofHours(17).toMinutes());
+                .penalizes(1);
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::unavailableEmployee)
                 .given(employee1, employee2,
                         new Shift("1", DAY_START_TIME.plusDays(1), DAY_END_TIME.plusDays(1), "Location", "Skill", employee1))
@@ -194,11 +165,11 @@ class EmployeeSchedulingConstraintProviderTest {
                 List.of(new UnavailablePeriod(DAY_1, LocalTime.of(8, 0), LocalTime.of(12, 30))),
                 Set.of(), Set.of());
 
-        // A shift overlapping the unavailable period is penalized by the overlap in minutes.
+        // A shift overlapping the unavailable period is penalized.
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::unavailableEmployeePartOfDay)
                 .given(employee,
                         new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", employee))
-                .penalizesBy(30);
+                .penalizes(1);
         // A shift not overlapping the unavailable period is not penalized.
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::unavailableEmployeePartOfDay)
                 .given(employee,
@@ -218,11 +189,7 @@ class EmployeeSchedulingConstraintProviderTest {
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::undesiredDayForEmployee)
                 .given(employee1, employee2,
                         new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1))
-                .penalizesBy((int) Duration.ofHours(8).toMinutes());
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::undesiredDayForEmployee)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_START_TIME.minusDays(1), DAY_END_TIME, "Location", "Skill", employee1))
-                .penalizesBy((int) Duration.ofHours(17).toMinutes());
+                .penalizes(1);
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::undesiredDayForEmployee)
                 .given(employee1, employee2,
                         new Shift("1", DAY_START_TIME.plusDays(1), DAY_END_TIME.plusDays(1), "Location", "Skill", employee1))
@@ -240,11 +207,7 @@ class EmployeeSchedulingConstraintProviderTest {
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::desiredDayForEmployee)
                 .given(employee1, employee2,
                         new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1))
-                .rewardsWith((int) Duration.ofHours(8).toMinutes());
-        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::desiredDayForEmployee)
-                .given(employee1, employee2,
-                        new Shift("1", DAY_START_TIME.minusDays(1), DAY_END_TIME, "Location", "Skill", employee1))
-                .rewardsWith((int) Duration.ofHours(17).toMinutes());
+                .rewardsWith(1);
         constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::desiredDayForEmployee)
                 .given(employee1, employee2,
                         new Shift("1", DAY_START_TIME.plusDays(1), DAY_END_TIME.plusDays(1), "Location", "Skill", employee1))
@@ -253,6 +216,54 @@ class EmployeeSchedulingConstraintProviderTest {
                 .given(employee1, employee2,
                         new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee2))
                 .rewards(0);
+    }
+
+    @Test
+    void maxTwoDutiesPerDay() {
+        Employee employee = new Employee("Amy", null, null, null, null);
+        LocalDateTime shift1Start = DAY_1.atTime(10, 0);
+        LocalDateTime shift1End = DAY_1.atTime(10, 30);
+        LocalDateTime shift2Start = DAY_1.atTime(12, 0);
+        LocalDateTime shift2End = DAY_1.atTime(13, 0);
+        LocalDateTime shift3Start = DAY_1.atTime(14, 45);
+        LocalDateTime shift3End = DAY_1.atTime(15, 15);
+
+        // 2 shifts on the same day is within the soft limit (0 penalty).
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxTwoDutiesPerDay)
+                .given(employee,
+                        new Shift("1", shift1Start, shift1End, "Location", "Skill", employee),
+                        new Shift("2", shift2Start, shift2End, "Location", "Skill", employee))
+                .penalizes(0);
+
+        // 3 shifts on the same day exceeds the limit by 1 (1 soft penalty).
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxTwoDutiesPerDay)
+                .given(employee,
+                        new Shift("1", shift1Start, shift1End, "Location", "Skill", employee),
+                        new Shift("2", shift2Start, shift2End, "Location", "Skill", employee),
+                        new Shift("3", shift3Start, shift3End, "Location", "Skill", employee))
+                .penalizes(1);
+    }
+
+    @Test
+    void noSimultaneousDutiesForSameClassroom() {
+        // Amy and Beth both teach classroom 1A (duo-job).
+        Employee amy = new Employee("Amy", Set.of("Teacher"), "1A", null, null, null);
+        Employee beth = new Employee("Beth", Set.of("Teacher"), "1A", null, null, null);
+        Employee carl = new Employee("Carl", Set.of("Teacher"), "2A", null, null, null);
+
+        // Amy and Beth simultaneously on duty at the same break time -> penalized.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::noSimultaneousDutiesForSameClassroom)
+                .given(amy, beth,
+                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Refter", "Teacher", amy),
+                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "Speelplaats", "Teacher", beth))
+                .penalizes(1);
+
+        // Amy and Carl (different classrooms) simultaneously on duty -> not penalized.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::noSimultaneousDutiesForSameClassroom)
+                .given(amy, carl,
+                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Refter", "Teacher", amy),
+                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "Speelplaats", "Teacher", carl))
+                .penalizes(0);
     }
 
     @Test
