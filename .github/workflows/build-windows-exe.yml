@@ -4,19 +4,22 @@ name: Build Windows executable
 # Native images cannot be cross-compiled, so this runs on a Windows runner.
 #
 # Every successful build creates a new GitHub Release with the zip attached:
+#   - a push to the stable branch releases under an automatic tag: win-v0.0.<run number>;
 #   - a tag push (win-v*) releases under that tag;
 #   - a manual run releases under an automatic tag: win-v0.0.<run number>.
 #
 # How to use:
-#   1. Push your changes to your fork.
-#   2. Run this workflow manually (Actions tab > "Build Windows executable" > "Run workflow"),
-#      or push a tag like "win-v1.0".
-#   3. Download the zip from the new release on the Releases page. Users unzip it anywhere
+#   1. Push your changes to the stable branch of your fork (a release is created automatically).
+#      Alternatively, run this workflow manually (Actions tab > "Build Windows executable"
+#      > "Run workflow") or push a tag like "win-v1.0".
+#   2. Download the zip from the new release on the Releases page. Users unzip it anywhere
 #      (no admin rights needed) and double-click start-employee-scheduling.bat.
 
 on:
   workflow_dispatch:
   push:
+    branches:
+      - stable
     tags:
       - 'win-v*'
 
