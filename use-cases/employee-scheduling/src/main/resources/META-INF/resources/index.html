@@ -81,6 +81,15 @@
         <nav class="navbar navbar-expand-lg mb-3">
             <span class="navbar-brand fw-bold">Planning pauzetoezicht</span>
             <div class="ms-auto">
+                <button id="uploadConfigButton" class="btn btn-outline-primary" type="button"
+                        title="Laad een configuratie uit een JSON-bestand">
+                    <span class="fas fa-upload"></span> Configuratie uploaden
+                </button>
+                <input type="file" id="configFileInput" accept=".json,application/json" class="d-none"/>
+                <button id="exportConfigButton" class="btn btn-outline-primary" type="button"
+                        title="Download de huidige configuratie als JSON-bestand">
+                    <span class="fas fa-download"></span> Configuratie downloaden
+                </button>
                 <button id="editDataButton" class="btn btn-outline-primary" type="button">
                     <span class="fas fa-edit"></span> Gegevens bewerken
                 </button>

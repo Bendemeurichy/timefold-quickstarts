@@ -35,6 +35,17 @@ $(document).ready(function () {
     $("#editDataButton").click(function () {
         openDataEditor();
     });
+    $("#uploadConfigButton").click(function () {
+        $("#configFileInput").click();
+    });
+    $("#configFileInput").change(function (event) {
+        uploadConfigFile(event.target.files[0]);
+        // Reset so selecting the same file again still triggers a change event.
+        event.target.value = "";
+    });
+    $("#exportConfigButton").click(function () {
+        exportConfig();
+    });
     $("#generateDataButton").click(function () {
         generateDataFromEditor();
     });
@@ -483,7 +494,16 @@ function loadScheduleConfig() {
 }
 
 function isValidScheduleConfig(config) {
-    return config != null && Array.isArray(config.shifts) && Array.isArray(config.teachers);
+    return config != null
+        && Number.isInteger(config.weeks) && config.weeks >= 1
+        && Array.isArray(config.shifts)
+        && config.shifts.every(shiftDef => shiftDef != null
+            && typeof shiftDef.location === "string" && shiftDef.location.length > 0
+            && typeof shiftDef.start === "string" && typeof shiftDef.end === "string")
+        && Array.isArray(config.teachers)
+        && config.teachers.every(teacher => teacher != null
+            && typeof teacher.name === "string" && teacher.name.length > 0
+            && Array.isArray(teacher.workingDays));
 }
 
 /**
@@ -741,8 +761,41 @@ function readDataEditor() {
     return config;
 }
 
-function generateDataFromEditor() {
-    scheduleConfig = readDataEditor();
+function uploadConfigFile(file) {
+    if (file == null) {
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = function () {
+        let config;
+        try {
+            config = JSON.parse(reader.result);
+        } catch (e) {
+            showWarning("Kon het bestand niet lezen.", "Dit is geen geldig JSON-bestand: " + e.message);
+            return;
+        }
+        if (!isValidScheduleConfig(config)) {
+            showWarning("Ongeldig configuratiebestand.",
+                "Het bestand moet \"weeks\" (getal), \"shifts\" (locatie, start, einde) "
+                + "en \"teachers\" (naam, workingDays) bevatten.");
+            return;
+        }
+        applyScheduleConfig(config);
+    };
+    reader.readAsText(file);
+}
+
+function exportConfig() {
+    const blob = new Blob([JSON.stringify(scheduleConfig, null, 2)], {type: "application/json"});
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "pauzetoezicht-config.json";
+    link.click();
+    URL.revokeObjectURL(link.href);
+}
+
+function applyScheduleConfig(config) {
+    scheduleConfig = config;
     try {
         localStorage.setItem("lunchDutyConfig", JSON.stringify(scheduleConfig));
     } catch (e) {
@@ -751,6 +804,24 @@ function generateDataFromEditor() {
     scheduleId = null;
     loadedSchedule = generateScheduleFromConfig(scheduleConfig);
     renderSchedule(loadedSchedule);
+}
+
+function showWarning(title, message) {
+    const notification = $(`<div class="toast" role="alert" aria-live="assertive" aria-atomic="true" style="min-width: 30rem"/>`)
+        .append($(`<div class="toast-header bg-danger">
+                 <strong class="me-auto text-dark">Fout</strong>
+                 <button type="button" class="btn-close" data-bs-dismiss="toast" aria-label="Sluiten"></button>
+               </div>`))
+        .append($(`<div class="toast-body"/>`)
+            .append($(`<p/>`).text(title))
+            .append($(`<pre/>`).append($(`<code/>`).text(message))));
+    $("#notificationPanel").append(notification);
+    notification.toast({delay: 30000});
+    notification.toast('show');
+}
+
+function generateDataFromEditor() {
+    applyScheduleConfig(readDataEditor());
     editDataModal.hide();
 }
 
