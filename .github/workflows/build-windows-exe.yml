@@ -27,7 +27,7 @@ jobs:
         working-directory: use-cases/employee-scheduling
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up GraalVM
         uses: graalvm/setup-graalvm@v1
@@ -52,7 +52,7 @@ jobs:
           Compress-Archive -Path "$dist\*" -DestinationPath "dist\employee-scheduling-windows.zip" -Force
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: employee-scheduling-windows
           path: dist/employee-scheduling-windows.zip
@@ -60,6 +60,6 @@ jobs:
 
       - name: Attach zip to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/employee-scheduling-windows.zip

@@ -144,7 +144,7 @@ function renderSchedule(schedule) {
                 .append($(employee.skills.map(skill => `<span class="badge me-1 mt-1" style="background-color:#d3d7cf">${skill}</span>`).join(''))));
         if (employee.classroom != null) {
             employeeGroupElement.append($('<div/>')
-                .append($(`<span class="badge me-1 mt-1" style="background-color:#868e96">Klas ${employee.classroom}</span>`)));
+                .append($(`<span class="badge me-1 mt-1" style="background-color:${comboColor([employee.classroom])}">Klas ${employee.classroom}</span>`)));
         }
         byEmployeeGroupDataSet.add({id: employee.name, content: employeeGroupElement.html()});
 
@@ -249,6 +249,22 @@ function rosterChip(color, text, lightText) {
         .text(text);
 }
 
+/**
+ * A stable pastel color per classroom (combination), derived from the classroom names,
+ * so every classroom and combo always gets the same color.
+ */
+function comboColor(classrooms) {
+    if (!classrooms || classrooms.length === 0) {
+        return "#729fcf"; // Tango Sky Blue
+    }
+    const key = [...classrooms].sort().join(",");
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+        hash = (hash * 31 + key.charCodeAt(i)) >>> 0;
+    }
+    return `hsl(${hash % 360}, 70%, 78%)`;
+}
+
 function renderRoster(schedule) {
     const roster = $("#rosterPanel");
     roster.children().remove();
@@ -258,14 +274,24 @@ function renderRoster(schedule) {
         return;
     }
 
-    // Legend
+    // Legend: one color per classroom (combination) used in this schedule
     const legend = $("<div class=\"d-flex align-items-center flex-wrap mb-3 roster-legend\"/>");
-    legend.append($("<span class=\"me-1\"/>").text("Legende:"));
-    legend.append(rosterChip("#729fcf", "Toezicht"));
-    legend.append(rosterChip(DESIRED_COLOR, "Voorkeursdag"));
-    legend.append(rosterChip(UNDESIRED_COLOR, "Liever niet"));
+    legend.append($("<span class=\"me-1\"/>").text("Klassen:"));
+    const combos = [];
+    schedule.shifts.forEach(shift => {
+        const key = (shift.classrooms || []).join(",");
+        if (!combos.some(combo => combo.join(",") === key)) {
+            combos.push(shift.classrooms || []);
+        }
+    });
+    combos.forEach(combo => legend.append(
+        rosterChip(comboColor(combo), combo.length === 0 ? "Alle klassen" : combo.join(" + "))));
+    // Availability is shown with a colored border around the chips
+    legend.append($("<span class=\"ms-3 me-1\"/>").text("Rand:"));
+    legend.append(rosterChip("#e9ecef", "Voorkeursdag").css("border", "2px solid " + DESIRED_COLOR));
+    legend.append(rosterChip("#e9ecef", "Liever niet").css("border", "2px solid " + UNDESIRED_COLOR));
     legend.append(rosterChip(UNAVAILABLE_COLOR, "Niet beschikbaar", true));
-    legend.append(rosterChip("#f4b6b6", "Niet toegewezen"));
+    legend.append(rosterChip("#f4b6b6", "Niet toegewezen").css("border", "2px dashed " + UNAVAILABLE_COLOR));
     roster.append(legend);
 
     // One roster row per shift (same location, hour and classrooms)
@@ -314,7 +340,7 @@ function renderRoster(schedule) {
                 .text(`${rosterRow.start} – ${rosterRow.end}`));
             if (rosterRow.classrooms.length > 0) {
                 rowHeader.append($("<div class=\"mt-1\"/>").append(rosterRow.classrooms.map(classroom =>
-                    `<span class="badge me-1" style="background-color:#868e96">Klas ${classroom}</span>`).join("")));
+                    `<span class="badge me-1" style="background-color:${comboColor([classroom])}">Klas ${classroom}</span>`).join("")));
             }
             tr.append(rowHeader);
             weekDates.forEach(date => {
@@ -337,15 +363,27 @@ function renderRoster(schedule) {
                         && (shift.classrooms || []).join(",") === rosterRow.classrooms.join(","))
                     .forEach(shift => {
                         if (shift.employee == null) {
-                            td.append(rosterChip("#f4b6b6", "Niet toegewezen"));
-                        } else {
-                            const color = getShiftColor(shift, shift.employee);
-                            const chip = rosterChip(color, shift.employee.name, color === UNAVAILABLE_COLOR);
-                            if (shift.employee.classroom != null) {
-                                chip.attr("title", "Klas " + shift.employee.classroom);
-                            }
-                            td.append(chip);
+                            td.append(rosterChip("#f4b6b6", "Niet toegewezen")
+                                .css("border", "2px dashed " + UNAVAILABLE_COLOR));
+                            return;
                         }
+                        const statusColor = getShiftColor(shift, shift.employee);
+                        let chip;
+                        if (statusColor === UNAVAILABLE_COLOR) {
+                            // A hard violation keeps the fully red chip so it stands out.
+                            chip = rosterChip(UNAVAILABLE_COLOR, shift.employee.name, true);
+                        } else {
+                            chip = rosterChip(comboColor(shift.classrooms), shift.employee.name);
+                            if (statusColor === DESIRED_COLOR) {
+                                chip.css("border", "2px solid " + DESIRED_COLOR);
+                            } else if (statusColor === UNDESIRED_COLOR) {
+                                chip.css("border", "2px solid " + UNDESIRED_COLOR);
+                            }
+                        }
+                        if (shift.employee.classroom != null) {
+                            chip.attr("title", "Klas " + shift.employee.classroom);
+                        }
+                        td.append(chip);
                     });
                 tr.append(td);
             });
