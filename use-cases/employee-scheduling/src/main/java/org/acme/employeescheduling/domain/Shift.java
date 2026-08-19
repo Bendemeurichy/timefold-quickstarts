@@ -8,8 +8,11 @@ import java.util.Objects;
 import java.util.Set;
 
 import ai.timefold.solver.core.api.domain.entity.PlanningEntity;
+import ai.timefold.solver.core.api.domain.entity.PlanningPin;
 import ai.timefold.solver.core.api.domain.common.PlanningId;
 import ai.timefold.solver.core.api.domain.variable.PlanningVariable;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
 
 @PlanningEntity
 public class Shift {
@@ -23,7 +26,8 @@ public class Shift {
     private String requiredSkill;
 
     /**
-     * The classrooms this shift supervises. A teacher only matches if their classroom is one of these.
+     * The classrooms this shift supervises. A teacher only matches if their classroom is one of these,
+     * or if one of their alternative classroom periods covers this shift's day and time.
      * If empty or null, any teacher matches.
      */
     private Set<String> classrooms;
@@ -34,6 +38,13 @@ public class Shift {
      */
     @PlanningVariable(allowsUnassigned = true)
     private Employee employee;
+
+    /**
+     * A pinned shift is locked: the solver keeps its assigned teacher as is
+     * (or keeps it unassigned) and only plans the other shifts around it.
+     */
+    @PlanningPin
+    private boolean pinned;
 
     public Shift() {
     }
@@ -109,6 +120,19 @@ public class Shift {
 
     public void setEmployee(Employee employee) {
         this.employee = employee;
+    }
+
+    public boolean isPinned() {
+        return pinned;
+    }
+
+    public void setPinned(boolean pinned) {
+        this.pinned = pinned;
+    }
+
+    @JsonIgnore // Derived from start and end, not a JSON property.
+    public int getDurationInMinutes() {
+        return (int) getStart().until(getEnd(), ChronoUnit.MINUTES);
     }
 
     public boolean isOverlappingWithDate(LocalDate date) {

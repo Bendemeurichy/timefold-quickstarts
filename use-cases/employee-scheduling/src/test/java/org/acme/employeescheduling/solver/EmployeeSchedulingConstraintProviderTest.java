@@ -12,10 +12,11 @@ import jakarta.inject.Inject;
 
 import ai.timefold.solver.core.api.score.stream.test.ConstraintVerifier;
 
+import org.acme.employeescheduling.domain.ClassroomPeriod;
+import org.acme.employeescheduling.domain.DayPeriod;
 import org.acme.employeescheduling.domain.Employee;
 import org.acme.employeescheduling.domain.EmployeeSchedule;
 import org.acme.employeescheduling.domain.Shift;
-import org.acme.employeescheduling.domain.UnavailablePeriod;
 import org.junit.jupiter.api.Test;
 
 import io.quarkus.test.junit.QuarkusTest;
@@ -97,6 +98,103 @@ class EmployeeSchedulingConstraintProviderTest {
     }
 
     @Test
+    void classroomMatchWithAlternativeClassroom() {
+        // Carl (classroom 1A) also covers classroom 2A, but only on Monday mornings.
+        Employee teacher = new Employee("Carl", Set.of("Teacher"), "1A", null, null, null);
+        teacher.setAlternativeClassroomPeriods(List.of(
+                new ClassroomPeriod("2A", DAY_1, LocalTime.of(8, 0), LocalTime.of(12, 0))));
+
+        // A shift for 2A inside the alternative classroom period matches: no penalty.
+        Shift morningShift = new Shift("1", DAY_1.atTime(10, 0), DAY_1.atTime(10, 30), "Speelplaats", "Teacher",
+                teacher);
+        morningShift.setClassrooms(Set.of("2A"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
+                .given(teacher, morningShift)
+                .penalizes(0);
+
+        // The alternative classroom only applies in the morning: an afternoon shift is penalized.
+        Shift afternoonShift = new Shift("2", DAY_1.atTime(14, 45), DAY_1.atTime(15, 15), "Speelplaats", "Teacher",
+                teacher);
+        afternoonShift.setClassrooms(Set.of("2A"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
+                .given(teacher, afternoonShift)
+                .penalizes(1);
+
+        // The alternative classroom does not apply on another day.
+        Shift otherDayShift = new Shift("3", DAY_3.atTime(10, 0), DAY_3.atTime(10, 30), "Speelplaats", "Teacher",
+                teacher);
+        otherDayShift.setClassrooms(Set.of("2A"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
+                .given(teacher, otherDayShift)
+                .penalizes(1);
+
+        // A shift supervising another classroom than the alternative one is penalized.
+        Shift otherClassroomShift = new Shift("4", DAY_1.atTime(10, 0), DAY_1.atTime(10, 30), "Speelplaats", "Teacher",
+                teacher);
+        otherClassroomShift.setClassrooms(Set.of("3A"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::classroomMatch)
+                .given(teacher, otherClassroomShift)
+                .penalizes(1);
+    }
+
+    @Test
+    void alternativeClassroomPriority() {
+        // Carl (classroom 1A) also covers classroom 2A, but only on Monday mornings.
+        Employee teacher = new Employee("Carl", Set.of("Teacher"), "1A", null, null, null);
+        teacher.setAlternativeClassroomPeriods(List.of(
+                new ClassroomPeriod("2A", DAY_1, LocalTime.of(8, 0), LocalTime.of(12, 0))));
+
+        // During the alternative classroom period a break for his own classroom is penalized:
+        // the alternative classroom takes priority over his own classroom.
+        Shift ownClassroomShift = new Shift("1", DAY_1.atTime(10, 0), DAY_1.atTime(10, 30), "Speelplaats",
+                "Teacher", teacher);
+        ownClassroomShift.setClassrooms(Set.of("1A", "1B"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::alternativeClassroomPriority)
+                .given(teacher, ownClassroomShift)
+                .penalizes(1);
+
+        // A break covering the alternative classroom during its period is not penalized.
+        Shift alternativeShift = new Shift("2", DAY_1.atTime(10, 0), DAY_1.atTime(10, 30), "Speelplaats",
+                "Teacher", teacher);
+        alternativeShift.setClassrooms(Set.of("2A", "2B"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::alternativeClassroomPriority)
+                .given(teacher, alternativeShift)
+                .penalizes(0);
+
+        // Outside the alternative classroom period a break for his own classroom is not penalized.
+        Shift afternoonShift = new Shift("3", DAY_1.atTime(14, 45), DAY_1.atTime(15, 15), "Speelplaats",
+                "Teacher", teacher);
+        afternoonShift.setClassrooms(Set.of("1A", "1B"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::alternativeClassroomPriority)
+                .given(teacher, afternoonShift)
+                .penalizes(0);
+
+        // The alternative classroom does not apply on another day.
+        Shift otherDayShift = new Shift("4", DAY_3.atTime(10, 0), DAY_3.atTime(10, 30), "Speelplaats",
+                "Teacher", teacher);
+        otherDayShift.setClassrooms(Set.of("1A", "1B"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::alternativeClassroomPriority)
+                .given(teacher, otherDayShift)
+                .penalizes(0);
+
+        // A break without classrooms supervises all classrooms, including the alternative one.
+        Shift allClassroomsShift = new Shift("5", DAY_1.atTime(10, 0), DAY_1.atTime(10, 30), "Speelplaats",
+                "Teacher", teacher);
+        allClassroomsShift.setClassrooms(Collections.emptySet());
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::alternativeClassroomPriority)
+                .given(teacher, allClassroomsShift)
+                .penalizes(0);
+
+        // An unassigned shift is not penalized.
+        Shift unassignedShift = new Shift("6", DAY_1.atTime(10, 0), DAY_1.atTime(10, 30), "Speelplaats",
+                "Teacher", null);
+        unassignedShift.setClassrooms(Set.of("1A", "1B"));
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::alternativeClassroomPriority)
+                .given(teacher, unassignedShift)
+                .penalizes(0);
+    }
+
+    @Test
     void unassignedShift() {
         Employee employee = new Employee("Amy", null, null, null, null);
         // A shift without a teacher is penalized, so the solver only leaves shifts
@@ -138,6 +236,19 @@ class EmployeeSchedulingConstraintProviderTest {
                         new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
                         new Shift("2", DAY_END_TIME, DAY_END_TIME.plusHours(1), "Location 2", "Skill", employee1))
                 .penalizes(0);
+
+        // Two unassigned shifts at the same time do not overlap: unassigned employees (null) never join.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::noOverlappingShifts)
+                .given(new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", null),
+                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "Location 2", "Skill", null))
+                .penalizes(0);
+
+        // An assigned and an unassigned shift at the same time do not overlap either.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::noOverlappingShifts)
+                .given(employee1,
+                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee1),
+                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "Location 2", "Skill", null))
+                .penalizes(0);
     }
 
     @Test
@@ -162,7 +273,7 @@ class EmployeeSchedulingConstraintProviderTest {
     void unavailableEmployeePartOfDay() {
         // Not available on Monday morning, for example a weekly doctor's appointment.
         Employee employee = new Employee("Amy", Set.of("Teacher"), "1A", Set.of(),
-                List.of(new UnavailablePeriod(DAY_1, LocalTime.of(8, 0), LocalTime.of(12, 30))),
+                List.of(new DayPeriod(DAY_1, LocalTime.of(8, 0), LocalTime.of(12, 30))),
                 Set.of(), Set.of());
 
         // A shift overlapping the unavailable period is penalized.
@@ -216,6 +327,100 @@ class EmployeeSchedulingConstraintProviderTest {
                 .given(employee1, employee2,
                         new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", employee2))
                 .rewards(0);
+    }
+
+    @Test
+    void undesiredPeriodForEmployee() {
+        // Amy prefers not to work on Monday afternoon.
+        Employee employee = new Employee("Amy", Set.of("Teacher"), "1A", Set.of(), List.of(), Set.of(), Set.of());
+        employee.setUndesiredPeriods(List.of(new DayPeriod(DAY_1, LocalTime.of(12, 0), LocalTime.of(17, 0))));
+
+        // A shift overlapping the undesired period is penalized.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::undesiredPeriodForEmployee)
+                .given(employee,
+                        new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", employee))
+                .penalizes(1);
+        // A shift before the undesired period is not penalized.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::undesiredPeriodForEmployee)
+                .given(employee,
+                        new Shift("2", DAY_1.atTime(10, 0), DAY_1.atTime(10, 30), "Speelplaats", "Teacher", employee))
+                .penalizes(0);
+        // A shift on another day is not penalized.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::undesiredPeriodForEmployee)
+                .given(employee,
+                        new Shift("3", DAY_3.atTime(12, 0), DAY_3.atTime(13, 0), "Refter", "Teacher", employee))
+                .penalizes(0);
+    }
+
+    @Test
+    void desiredPeriodForEmployee() {
+        // Amy prefers to work on Monday morning.
+        Employee employee = new Employee("Amy", Set.of("Teacher"), "1A", Set.of(), List.of(), Set.of(), Set.of());
+        employee.setDesiredPeriods(List.of(new DayPeriod(DAY_1, LocalTime.of(8, 0), LocalTime.of(12, 0))));
+
+        // A shift overlapping the desired period is rewarded.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::desiredPeriodForEmployee)
+                .given(employee,
+                        new Shift("1", DAY_1.atTime(10, 0), DAY_1.atTime(10, 30), "Speelplaats", "Teacher", employee))
+                .rewardsWith(1);
+        // A shift after the desired period is not rewarded.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::desiredPeriodForEmployee)
+                .given(employee,
+                        new Shift("2", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", employee))
+                .rewards(0);
+    }
+
+    @Test
+    void maxWorkingMinutes() {
+        // Amy's contract caps her at 60 minutes per week; Beth has no cap.
+        Employee cappedEmployee = new Employee("Amy", null, null, null, null);
+        cappedEmployee.setMaxWorkingMinutes(60);
+        Employee uncappedEmployee = new Employee("Beth", null, null, null, null);
+        // DAY_1 (2021-02-01) is a Monday; 2021-02-08 is the Monday of the next week.
+        LocalDate nextWeek = DAY_1.plusWeeks(1);
+
+        // 90 minutes of shifts in the same week exceeds the 60 minute weekly cap by 30.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxWorkingMinutes)
+                .given(cappedEmployee,
+                        new Shift("1", DAY_1.atTime(10, 0), DAY_1.atTime(11, 0), "Location", "Skill", cappedEmployee),
+                        new Shift("2", DAY_1.atTime(12, 0), DAY_1.atTime(12, 30), "Location", "Skill", cappedEmployee))
+                .penalizesBy(30);
+
+        // Every week has its own cap: 90 minutes in each of two weeks penalizes 30 twice.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxWorkingMinutes)
+                .given(cappedEmployee,
+                        new Shift("1", DAY_1.atTime(10, 0), DAY_1.atTime(11, 0), "Location", "Skill", cappedEmployee),
+                        new Shift("2", DAY_1.atTime(12, 0), DAY_1.atTime(12, 30), "Location", "Skill", cappedEmployee),
+                        new Shift("3", nextWeek.atTime(10, 0), nextWeek.atTime(11, 0), "Location", "Skill",
+                                cappedEmployee),
+                        new Shift("4", nextWeek.atTime(12, 0), nextWeek.atTime(12, 30), "Location", "Skill",
+                                cappedEmployee))
+                .penalizesBy(60);
+
+        // 60 minutes in each of two weeks stays within the weekly cap.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxWorkingMinutes)
+                .given(cappedEmployee,
+                        new Shift("1", DAY_1.atTime(10, 0), DAY_1.atTime(11, 0), "Location", "Skill", cappedEmployee),
+                        new Shift("3", nextWeek.atTime(10, 0), nextWeek.atTime(11, 0), "Location", "Skill",
+                                cappedEmployee))
+                .penalizes(0);
+
+        // Exactly at the weekly cap is allowed.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxWorkingMinutes)
+                .given(cappedEmployee,
+                        new Shift("1", DAY_1.atTime(10, 0), DAY_1.atTime(11, 0), "Location", "Skill", cappedEmployee))
+                .penalizes(0);
+
+        // A teacher without a cap can take any amount of minutes.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxWorkingMinutes)
+                .given(uncappedEmployee,
+                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", uncappedEmployee))
+                .penalizes(0);
+
+        // An unassigned shift does not count towards anyone's cap.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxWorkingMinutes)
+                .given(new Shift("2", DAY_START_TIME, DAY_END_TIME, "Location", "Skill", null))
+                .penalizes(0);
     }
 
     @Test

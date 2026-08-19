@@ -1,0 +1,93 @@
+name: Build Mac executable
+
+# Builds the employee-scheduling app as a portable, native Mac executable.
+# Native images cannot be cross-compiled, so this runs on a macOS runner
+# (Apple Silicon, arm64 - Intel Macs are not supported by this build).
+#
+# Every successful build creates a new GitHub Release with the zip attached:
+#   - a push to the stable branch releases under an automatic tag: mac-v0.0.<run number>;
+#   - a tag push (mac-v*) releases under that tag;
+#   - a manual run releases under an automatic tag: mac-v0.0.<run number>.
+#
+# How to use:
+#   1. Push your changes to the stable branch of your fork (a release is created automatically).
+#      Alternatively, run this workflow manually (Actions tab > "Build Mac executable"
+#      > "Run workflow") or push a tag like "mac-v1.0".
+#   2. Download the zip from the new release on the Releases page. Users unzip it anywhere,
+#      remove the quarantine flag once (the binary is not notarized):
+#        xattr -dr com.apple.quarantine employee-scheduling
+#      and double-click start-employee-scheduling.command.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - stable
+    tags:
+      - 'mac-v*'
+
+permissions:
+  contents: write # Needed to attach the zip to a GitHub Release.
+
+jobs:
+  build-mac-exe:
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: use-cases/employee-scheduling
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up GraalVM
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '21'
+          distribution: 'graalvm'
+          cache: 'maven'
+
+      - name: Build native executable
+        run: mvn -B package -Dnative -DskipTests
+
+      - name: Package portable zip
+        working-directory: .
+        run: |
+          runner=$(ls use-cases/employee-scheduling/target/*-runner 2>/dev/null | head -n 1)
+          if [ -z "$runner" ]; then
+            echo "Native runner not found in target/" >&2
+            exit 1
+          fi
+          dist="dist/employee-scheduling"
+          mkdir -p "$dist"
+          cp "$runner" "$dist/employee-scheduling"
+          cp "use-cases/employee-scheduling/packaging/macos/start-employee-scheduling.command" "$dist/"
+          chmod +x "$dist/employee-scheduling" "$dist/start-employee-scheduling.command"
+          (cd "$dist" && zip -r ../employee-scheduling-macos.zip .)
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: employee-scheduling-macos
+          path: dist/employee-scheduling-macos.zip
+          retention-days: 30
+
+      - name: Resolve release tag
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            tag="$REF_NAME"
+          else
+            tag="mac-v0.0.$RUN_NUMBER"
+          fi
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
+
+      # Every successful build pushes a new release with the zip attached.
+      - name: Create GitHub Release with the zip
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: Employee Scheduling ${{ env.RELEASE_TAG }}
+          files: dist/employee-scheduling-macos.zip

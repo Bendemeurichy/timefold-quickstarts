@@ -51,6 +51,32 @@
         .roster-legend {
             gap: 0.25rem;
         }
+        /* Editable name chip: a dropdown styled like a roster chip, with a lock next to it */
+        .roster-assignment {
+            display: inline-flex;
+            align-items: center;
+            margin: 0.15rem;
+        }
+        .roster-select {
+            border-radius: 1rem;
+            padding: 0.15rem 0.4rem 0.15rem 0.6rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #212529;
+            box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+            border: none;
+            max-width: 9.5rem;
+        }
+        .roster-select:disabled {
+            opacity: 1;
+        }
+        .roster-pin {
+            border: none;
+            background: transparent;
+            color: #495057;
+            padding: 0 0.3rem;
+            font-size: 0.8rem;
+        }
 
         /* Printable roster: hide everything except the week roster when printing */
         @media print {
@@ -67,9 +93,19 @@
                 break-inside: avoid;
                 box-shadow: none !important;
             }
-            .roster-chip, .roster-no-lunch, .roster-table thead th, .roster-location-cell {
+            .roster-chip, .roster-no-lunch, .roster-table thead th, .roster-location-cell,
+            .roster-select {
                 -webkit-print-color-adjust: exact;
                 print-color-adjust: exact;
+            }
+            /* On paper the dropdown prints as the plain name, without the lock button */
+            .roster-pin {
+                display: none !important;
+            }
+            .roster-select {
+                appearance: none;
+                -webkit-appearance: none;
+                box-shadow: none;
             }
         }
     </style>

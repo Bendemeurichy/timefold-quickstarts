@@ -18,7 +18,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import org.acme.employeescheduling.domain.Employee;
 import org.acme.employeescheduling.domain.EmployeeSchedule;
 import org.acme.employeescheduling.domain.Shift;
-import org.acme.employeescheduling.domain.UnavailablePeriod;
+import org.acme.employeescheduling.domain.DayPeriod;
 
 @ApplicationScoped
 public class DemoDataGenerator {
@@ -221,7 +221,7 @@ public class DemoDataGenerator {
                 .filter(schoolDay -> schoolDay.getDayOfWeek() == dayOfWeek
                         && !teacher.getUnavailableDates().contains(schoolDay))
                 .findFirst()
-                .ifPresent(date -> teacher.getUnavailablePeriods().add(new UnavailablePeriod(date, from, to)));
+                .ifPresent(date -> teacher.getUnavailablePeriods().add(new DayPeriod(date, from, to)));
     }
 
     private List<String> joinAllCombinations(String[]... partArrays) {

@@ -3,6 +3,7 @@ package org.acme.employeescheduling.solver;
 import static ai.timefold.solver.core.api.score.stream.Joiners.equal;
 import static ai.timefold.solver.core.api.score.stream.Joiners.overlapping;
 
+import java.time.DayOfWeek;
 import java.util.Objects;
 
 import ai.timefold.solver.core.api.score.HardSoftBigDecimalScore;
@@ -12,6 +13,7 @@ import ai.timefold.solver.core.api.score.stream.ConstraintFactory;
 import ai.timefold.solver.core.api.score.stream.ConstraintProvider;
 import ai.timefold.solver.core.api.score.stream.common.LoadBalance;
 
+import org.acme.employeescheduling.domain.DayPeriod;
 import org.acme.employeescheduling.domain.Employee;
 import org.acme.employeescheduling.domain.Shift;
 
@@ -27,14 +29,24 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
                 noOverlappingShifts(constraintFactory),
                 unavailableEmployee(constraintFactory),
                 unavailableEmployeePartOfDay(constraintFactory),
+                maxWorkingMinutes(constraintFactory),
 
                 // Soft constraints
                 undesiredDayForEmployee(constraintFactory),
                 desiredDayForEmployee(constraintFactory),
+                undesiredPeriodForEmployee(constraintFactory),
+                desiredPeriodForEmployee(constraintFactory),
+                alternativeClassroomPriority(constraintFactory),
                 maxTwoDutiesPerDay(constraintFactory),
                 noSimultaneousDutiesForSameClassroom(constraintFactory),
                 balanceEmployeeShiftAssignments(constraintFactory)
         };
+    }
+
+    private static boolean overlapsPeriod(Shift shift, DayPeriod period) {
+        return Objects.equals(period.getDate(), shift.getStart().toLocalDate())
+                && shift.getStart().toLocalTime().isBefore(period.getTo())
+                && shift.getEnd().toLocalTime().isAfter(period.getFrom());
     }
 
     Constraint requiredSkill(ConstraintFactory constraintFactory) {
@@ -53,7 +65,11 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
                         && shift.getClassrooms() != null && !shift.getClassrooms().isEmpty()
                         // Teachers without a classroom can be scheduled for every shift.
                         && shift.getEmployee().getClassroom() != null
-                        && !shift.getClassrooms().contains(shift.getEmployee().getClassroom()))
+                        && !shift.getClassrooms().contains(shift.getEmployee().getClassroom())
+                        // An alternative classroom also matches, but only on its day and time.
+                        && shift.getEmployee().getAlternativeClassroomPeriods().stream()
+                                .noneMatch(period -> shift.getClassrooms().contains(period.getClassroom())
+                                        && overlapsPeriod(shift, period)))
                 .penalize(HardSoftBigDecimalScore.ONE_HARD)
                 .asConstraint("Wrong classroom");
     }
@@ -87,13 +103,25 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
     Constraint unavailableEmployeePartOfDay(ConstraintFactory constraintFactory) {
         return constraintFactory.forEach(Shift.class)
                 .filter(shift -> shift.getEmployee() != null
-                        && shift.getEmployee().getUnavailablePeriods() != null
-                        && shift.getEmployee().getUnavailablePeriods().stream().anyMatch(period ->
-                                Objects.equals(period.getDate(), shift.getStart().toLocalDate())
-                                        && shift.getStart().toLocalTime().isBefore(period.getTo())
-                                        && shift.getEnd().toLocalTime().isAfter(period.getFrom())))
+                        && shift.getEmployee().getUnavailablePeriods().stream()
+                                .anyMatch(period -> overlapsPeriod(shift, period)))
                 .penalize(HardSoftBigDecimalScore.ONE_HARD)
                 .asConstraint("Unavailable employee (part of day)");
+    }
+
+    Constraint maxWorkingMinutes(ConstraintFactory constraintFactory) {
+        // A teacher's contract caps the minutes they may be assigned per week (Monday to Sunday):
+        // the total weekly shift time is divided over all teachers, weighted by each teacher's work ratio.
+        // Teachers without a cap (null) can take any amount of minutes.
+        return constraintFactory.forEach(Shift.class)
+                .filter(shift -> shift.getEmployee() != null && shift.getEmployee().getMaxWorkingMinutes() != null)
+                .groupBy(Shift::getEmployee,
+                        shift -> shift.getStart().toLocalDate().with(DayOfWeek.MONDAY),
+                        ConstraintCollectors.sum(Shift::getDurationInMinutes))
+                .filter((employee, weekStart, totalMinutes) -> totalMinutes > employee.getMaxWorkingMinutes())
+                .penalize(HardSoftBigDecimalScore.ONE_HARD,
+                        (employee, weekStart, totalMinutes) -> totalMinutes - employee.getMaxWorkingMinutes())
+                .asConstraint("Max working minutes per week");
     }
 
     Constraint undesiredDayForEmployee(ConstraintFactory constraintFactory) {
@@ -112,6 +140,40 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
                         && shift.getEmployee().getDesiredDates().contains(shift.getStart().toLocalDate()))
                 .reward(HardSoftBigDecimalScore.ONE_SOFT)
                 .asConstraint("Desired day for employee");
+    }
+
+    Constraint undesiredPeriodForEmployee(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Shift.class)
+                .filter(shift -> shift.getEmployee() != null
+                        && shift.getEmployee().getUndesiredPeriods().stream()
+                                .anyMatch(period -> overlapsPeriod(shift, period)))
+                .penalize(HardSoftBigDecimalScore.ONE_SOFT)
+                .asConstraint("Undesired period for employee");
+    }
+
+    Constraint desiredPeriodForEmployee(ConstraintFactory constraintFactory) {
+        return constraintFactory.forEach(Shift.class)
+                .filter(shift -> shift.getEmployee() != null
+                        && shift.getEmployee().getDesiredPeriods().stream()
+                                .anyMatch(period -> overlapsPeriod(shift, period)))
+                .reward(HardSoftBigDecimalScore.ONE_SOFT)
+                .asConstraint("Desired period for employee");
+    }
+
+    Constraint alternativeClassroomPriority(ConstraintFactory constraintFactory) {
+        // On the day halves where a teacher can also cover another classroom, that classroom
+        // takes priority over their own classroom: assigning the teacher to a break that
+        // does not cover the alternative classroom is penalized, so the solver plans them
+        // in the alternative classroom during its valid timeslots whenever there is a break for it.
+        // A break without classrooms supervises all classrooms, including the alternative one.
+        return constraintFactory.forEach(Shift.class)
+                .filter(shift -> shift.getEmployee() != null
+                        && shift.getClassrooms() != null && !shift.getClassrooms().isEmpty()
+                        && shift.getEmployee().getAlternativeClassroomPeriods().stream()
+                                .anyMatch(period -> overlapsPeriod(shift, period)
+                                        && !shift.getClassrooms().contains(period.getClassroom())))
+                .penalize(HardSoftBigDecimalScore.ONE_SOFT)
+                .asConstraint("Alternative classroom takes priority");
     }
 
     Constraint maxTwoDutiesPerDay(ConstraintFactory constraintFactory) {

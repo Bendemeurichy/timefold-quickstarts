@@ -4,18 +4,19 @@ import java.time.LocalDate;
 import java.time.LocalTime;
 
 /**
- * A part of a day during which a teacher is not available (for example a doctor's appointment).
+ * A part of a day, used either as an unavailability (for example a morning off)
+ * or as a soft preference window (for example an undesired afternoon).
  */
-public class UnavailablePeriod {
+public class DayPeriod {
 
     private LocalDate date;
     private LocalTime from;
     private LocalTime to;
 
-    public UnavailablePeriod() {
+    public DayPeriod() {
     }
 
-    public UnavailablePeriod(LocalDate date, LocalTime from, LocalTime to) {
+    public DayPeriod(LocalDate date, LocalTime from, LocalTime to) {
         this.date = date;
         this.from = from;
         this.to = to;

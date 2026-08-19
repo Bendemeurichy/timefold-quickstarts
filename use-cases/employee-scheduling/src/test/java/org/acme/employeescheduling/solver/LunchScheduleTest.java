@@ -21,10 +21,10 @@ import ai.timefold.solver.core.api.solver.Solver;
 import ai.timefold.solver.core.api.solver.SolverFactory;
 import ai.timefold.solver.core.config.solver.SolverConfig;
 
+import org.acme.employeescheduling.domain.DayPeriod;
 import org.acme.employeescheduling.domain.Employee;
 import org.acme.employeescheduling.domain.EmployeeSchedule;
 import org.acme.employeescheduling.domain.Shift;
-import org.acme.employeescheduling.domain.UnavailablePeriod;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -58,7 +58,7 @@ class LunchScheduleTest {
         Employee beth = teacher("Beth", "1B",
                 Set.of(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY));
         // Beth has a doctor's appointment on Monday and only misses part of the day.
-        beth.setUnavailablePeriods(List.of(new UnavailablePeriod(MONDAY, LocalTime.of(11, 30), LocalTime.of(12, 30))));
+        beth.setUnavailablePeriods(List.of(new DayPeriod(MONDAY, LocalTime.of(11, 30), LocalTime.of(12, 30))));
         List<Employee> teachers = List.of(
                 teacher("Amy", "1A", Set.of(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY,
                         DayOfWeek.FRIDAY)),
@@ -102,7 +102,7 @@ class LunchScheduleTest {
                     shift.getEmployee() + " of classroom " + shift.getEmployee().getClassroom()
                             + " does not match " + shift.getClassrooms());
             // ... and who has no part-day unavailability overlapping the shift.
-            for (UnavailablePeriod period : shift.getEmployee().getUnavailablePeriods()) {
+            for (DayPeriod period : shift.getEmployee().getUnavailablePeriods()) {
                 if (period.getDate().equals(shift.getStart().toLocalDate())) {
                     assertTrue(!shift.getStart().toLocalTime().isBefore(period.getTo())
                                     || !shift.getEnd().toLocalTime().isAfter(period.getFrom()),
@@ -169,6 +169,38 @@ class LunchScheduleTest {
                 "Amy should be assigned to both consecutive shifts on her working day");
         assertEquals(0, solution.getShifts().stream().filter(shift -> beth.equals(shift.getEmployee())).count(),
                 "Beth should not be scheduled on her day off");
+    }
+
+    @Test
+    @Timeout(120)
+    void pinnedShiftKeepsItsLockedTeacher() {
+        // Amy and Beth both work on Monday and both match classroom 1A.
+        Employee amy = teacher("Amy", "1A", Set.of(DayOfWeek.MONDAY));
+        Employee beth = teacher("Beth", "1A", Set.of(DayOfWeek.MONDAY));
+
+        // Beth is locked on the Refter shift: the solver may not change that assignment.
+        Shift refter = new Shift("0", MONDAY.atTime(LUNCH_START), MONDAY.atTime(LUNCH_END), "Refter", TEACHER_SKILL,
+                beth);
+        refter.setClassrooms(Set.of("1A"));
+        refter.setPinned(true);
+        Shift speelplaats = new Shift("1", MONDAY.atTime(LUNCH_START), MONDAY.atTime(LUNCH_END), "Speelplaats",
+                TEACHER_SKILL, null);
+        speelplaats.setClassrooms(Set.of("1A"));
+
+        EmployeeSchedule problem = new EmployeeSchedule(List.of(amy, beth), List.of(refter, speelplaats));
+
+        SolverFactory<EmployeeSchedule> solverFactory = SolverFactory.create(solverConfig);
+        Solver<EmployeeSchedule> solver = solverFactory.buildSolver();
+        EmployeeSchedule solution = solver.solve(problem);
+
+        assertTrue(solution.getScore().isFeasible());
+        Shift solvedRefter = solution.getShifts().stream()
+                .filter(shift -> "Refter".equals(shift.getLocation())).findFirst().orElseThrow();
+        Shift solvedSpeelplaats = solution.getShifts().stream()
+                .filter(shift -> "Speelplaats".equals(shift.getLocation())).findFirst().orElseThrow();
+        assertEquals(beth, solvedRefter.getEmployee(), "A pinned shift keeps its locked teacher");
+        assertEquals(amy, solvedSpeelplaats.getEmployee(),
+                "The overlapping shift goes to the other teacher: Beth is already taken by the pinned shift");
     }
 
     private Employee teacher(String name, String classroom, Set<DayOfWeek> workingDays,

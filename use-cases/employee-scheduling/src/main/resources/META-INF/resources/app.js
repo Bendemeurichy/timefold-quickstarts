@@ -88,10 +88,10 @@ function setupAjax() {
     });
 }
 
-function overlapsUnavailablePeriod(shift, employee) {
+function overlapsPeriod(shift, periods) {
     const shiftStart = JSJoda.LocalDateTime.parse(shift.start);
     const shiftEnd = JSJoda.LocalDateTime.parse(shift.end);
-    return (employee.unavailablePeriods || []).some(period => {
+    return (periods || []).some(period => {
         const periodStart = JSJoda.LocalDate.parse(period.date).atTime(JSJoda.LocalTime.parse(period.from));
         const periodEnd = JSJoda.LocalDate.parse(period.date).atTime(JSJoda.LocalTime.parse(period.to));
         return shiftStart.isBefore(periodEnd) && shiftEnd.isAfter(periodStart);
@@ -104,17 +104,19 @@ function getShiftColor(shift, employee) {
     const shiftEnd = JSJoda.LocalDateTime.parse(shift.end);
     const shiftEndDateString = shiftEnd.toLocalDate().toString();
     if (employee.unavailableDates.includes(shiftStartDateString) ||
-        overlapsUnavailablePeriod(shift, employee) ||
+        overlapsPeriod(shift, employee.unavailablePeriods) ||
         // The contains() check is ignored for a shift end at midnight (00:00:00).
         (shiftEnd.isAfter(shiftStart.toLocalDate().plusDays(1).atStartOfDay()) &&
             employee.unavailableDates.includes(shiftEndDateString))) {
         return UNAVAILABLE_COLOR
     } else if (employee.undesiredDates.includes(shiftStartDateString) ||
+        overlapsPeriod(shift, employee.undesiredPeriods) ||
         // The contains() check is ignored for a shift end at midnight (00:00:00).
         (shiftEnd.isAfter(shiftStart.toLocalDate().plusDays(1).atStartOfDay()) &&
             employee.undesiredDates.includes(shiftEndDateString))) {
         return UNDESIRED_COLOR
     } else if (employee.desiredDates.includes(shiftStartDateString) ||
+        overlapsPeriod(shift, employee.desiredPeriods) ||
         // The contains() check is ignored for a shift end at midnight (00:00:00).
         (shiftEnd.isAfter(shiftStart.toLocalDate().plusDays(1).atStartOfDay()) &&
             employee.desiredDates.includes(shiftEndDateString))) {
@@ -132,6 +134,10 @@ function refreshSchedule() {
         return;
     }
     $.getJSON("/schedules/" + scheduleId, function (schedule) {
+        // The solver never received the volunteer shifts, so add them back for display.
+        const volunteerShifts = (loadedSchedule != null ? loadedSchedule.shifts : [])
+            .filter(shift => shift.volunteersOnly);
+        schedule.shifts = schedule.shifts.concat(volunteerShifts);
         loadedSchedule = schedule;
         renderSchedule(schedule);
     })
@@ -159,15 +165,45 @@ function renderSchedule(schedule) {
     byEmployeeGroupDataSet.clear();
     byEmployeeItemDataSet.clear();
 
+    // Total planned minutes per teacher, shown as a tooltip on their name.
+    const plannedMinutesByEmployee = {};
+    schedule.shifts.forEach(shift => {
+        if (shift.employee != null) {
+            plannedMinutesByEmployee[shift.employee.name] = (plannedMinutesByEmployee[shift.employee.name] || 0)
+                + JSJoda.LocalDateTime.parse(shift.start)
+                    .until(JSJoda.LocalDateTime.parse(shift.end), JSJoda.ChronoUnit.MINUTES);
+        }
+    });
+
     schedule.employees.forEach((employee, index) => {
         const employeeGroupElement = $('<div class="card-body p-2"/>')
             .append($(`<h5 class="card-title mb-2"/>)`)
+                .attr("title", `Ingepland: ${plannedMinutesByEmployee[employee.name] || 0} min`)
                 .append(employee.name))
             .append($('<div/>')
                 .append($(employee.skills.map(skill => `<span class="badge me-1 mt-1" style="background-color:#d3d7cf">${skill}</span>`).join(''))));
         if (employee.classroom != null) {
             employeeGroupElement.append($('<div/>')
-                .append($(`<span class="badge me-1 mt-1" style="background-color:${comboColor([employee.classroom])}">Klas ${employee.classroom}</span>`)));
+                .append($(`<span class="badge me-1 mt-1" style="background-color:${comboColor([employee.classroom])}">${classroomLabel([employee.classroom])}</span>`)));
+        }
+        // Show the other classrooms this teacher can also cover on the toggled day halves.
+        // On those day halves the alternative classroom takes priority over the teacher's own classroom.
+        const alternativeClassrooms = [...new Set((employee.alternativeClassroomPeriods || [])
+            .map(period => period.classroom))].sort();
+        if (alternativeClassrooms.length > 0) {
+            const badges = alternativeClassrooms.map(classroom =>
+                `<span class="badge me-1 mt-1" style="background-color:${comboColor([classroom])}; `
+                + `border: 1px dashed #868e96" `
+                + `title="Krijgt op de ingestelde dagdelen voorrang op de eigen klas; `
+                + `enkel inzetbaar in klas ${classroom} tijdens pauzes binnen die dagdelen">ook in ${classroom}</span>`
+            ).join('');
+            employeeGroupElement.append($('<div/>').append($(badges)));
+        }
+        if (employee.maxWorkingMinutes != null) {
+            employeeGroupElement.append($('<div/>')
+                .append($(`<span class="badge me-1 mt-1" style="background-color:#e9ecef" `
+                    + `title="Maximum aantal minuten toezicht per week (harde grens)">`
+                    + `${contractLabel(employee)}: max. ${employee.maxWorkingMinutes} min</span>`)));
         }
         byEmployeeGroupDataSet.add({id: employee.name, content: employeeGroupElement.html()});
 
@@ -210,6 +246,17 @@ function renderSchedule(schedule) {
                 style: "opacity: 0.5; background-color: " + UNDESIRED_COLOR,
             });
         });
+        (employee.undesiredPeriods || []).forEach((period, periodIndex) => {
+            const byEmployeeShiftElement = $(`<div/>`)
+                .append($(`<h5 class="card-title mb-1"/>`).text("Liever niet"));
+            byEmployeeItemDataSet.add({
+                id: "employee-" + index + "-undesired-period-" + periodIndex, group: employee.name,
+                content: byEmployeeShiftElement.html(),
+                start: period.date + "T" + period.from, end: period.date + "T" + period.to,
+                type: "background",
+                style: "opacity: 0.5; background-color: " + UNDESIRED_COLOR,
+            });
+        });
         employee.desiredDates.forEach((rawDate, dateIndex) => {
             const date = JSJoda.LocalDate.parse(rawDate)
             const start = date.atStartOfDay().toString();
@@ -220,6 +267,17 @@ function renderSchedule(schedule) {
                 id: "employee-" + index + "-desired-" + dateIndex, group: employee.name,
                 content: byEmployeeShiftElement.html(),
                 start: start, end: end,
+                type: "background",
+                style: "opacity: 0.5; background-color: " + DESIRED_COLOR,
+            });
+        });
+        (employee.desiredPeriods || []).forEach((period, periodIndex) => {
+            const byEmployeeShiftElement = $(`<div/>`)
+                .append($(`<h5 class="card-title mb-1"/>`).text("Voorkeur"));
+            byEmployeeItemDataSet.add({
+                id: "employee-" + index + "-desired-period-" + periodIndex, group: employee.name,
+                content: byEmployeeShiftElement.html(),
+                start: period.date + "T" + period.from, end: period.date + "T" + period.to,
                 type: "background",
                 style: "opacity: 0.5; background-color: " + DESIRED_COLOR,
             });
@@ -236,8 +294,7 @@ function renderSchedule(schedule) {
                 .append(shift.location))
             .append($('<div/>')
                 .append($(`<span class="badge me-1 mt-1" style="background-color:${skillColor}">${shift.requiredSkill}</span>`))
-                .append($((shift.classrooms || []).map(classroom =>
-                    `<span class="badge me-1 mt-1" style="background-color:#868e96">Klas ${classroom}</span>`).join(''))));
+                .append($(`<span class="badge me-1 mt-1" style="background-color:#868e96">${classroomLabel(shift.classrooms)}</span>`)));
 
         const shiftColor = getShiftColor(shift, shift.employee);
         byEmployeeItemDataSet.add({
@@ -248,7 +305,10 @@ function renderSchedule(schedule) {
         });
     });
 
-    $("#info").text(`Deze gegevens bevatten ${schedule.shifts.length} diensten en ${schedule.employees.length} leerkrachten.`);
+    const volunteerShiftCount = schedule.shifts.filter(shift => shift.volunteersOnly).length;
+    $("#info").text(`Deze gegevens bevatten ${schedule.shifts.length - volunteerShiftCount} diensten`
+        + (volunteerShiftCount > 0 ? ` en ${volunteerShiftCount} vrijwilligersdiensten` : "")
+        + ` en ${schedule.employees.length} leerkrachten.`);
 
     if (schedule.shifts.length > 0) {
         // Show only the first 7 days
@@ -273,6 +333,82 @@ function rosterChip(color, text, lightText) {
 }
 
 /**
+ * The write-in chip for a volunteers-only shift (0 teachers): not filled in by the solver,
+ * only printed so a volunteer's name can be written in with pen.
+ */
+function volunteerChip() {
+    return rosterChip("#ffffff", "Vrijwilligers: ____________")
+        .css("border", "2px dashed #868e96")
+        .css("box-shadow", "none")
+        .css("white-space", "normal");
+}
+
+/**
+ * An editable chip for one shift: a dropdown with all teacher names to swap the
+ * assigned teacher by hand, plus a lock. Locking a shift pins it: the solver keeps
+ * its teacher as is (or keeps it unassigned) and only plans the other shifts.
+ */
+function assignmentPicker(schedule, shift) {
+    const wrapper = $("<span class=\"roster-assignment\"/>");
+    const select = $("<select class=\"roster-select\"/>")
+        .append($("<option value=\"\">Niet toegewezen</option>"));
+    schedule.employees.forEach(employee => {
+        select.append($("<option/>").attr("value", employee.name).text(employee.name));
+    });
+    select.val(shift.employee == null ? "" : shift.employee.name);
+
+    // Same colors as the plain chips: red for a hard violation or an unassigned shift,
+    // otherwise the classroom color with a border for the teacher's availability.
+    if (shift.employee == null) {
+        select.css("background-color", "#f4b6b6")
+            .css("border", "2px dashed " + UNAVAILABLE_COLOR);
+    } else {
+        const statusColor = getShiftColor(shift, shift.employee);
+        if (statusColor === UNAVAILABLE_COLOR) {
+            // A hard violation keeps the fully red chip so it stands out.
+            select.css("background-color", UNAVAILABLE_COLOR).css("color", "#fff");
+        } else {
+            select.css("background-color", comboColor(shift.classrooms));
+            if (statusColor === DESIRED_COLOR) {
+                select.css("border", "2px solid " + DESIRED_COLOR);
+            } else if (statusColor === UNDESIRED_COLOR) {
+                select.css("border", "2px solid " + UNDESIRED_COLOR);
+            }
+        }
+        if (shift.employee.classroom != null) {
+            // The teacher covers another classroom here via an alternative class toggle.
+            const coveringAlternative = (shift.classrooms || []).length > 0
+                && !shift.classrooms.includes(shift.employee.classroom);
+            select.attr("title", coveringAlternative
+                ? "Klas " + shift.employee.classroom + " – dekt hier een andere klas"
+                : "Klas " + shift.employee.classroom);
+        }
+    }
+    // A pinned (locked) shift keeps its teacher: the dropdown can not change it.
+    select.prop("disabled", shift.pinned);
+    select.change(function () {
+        const employeeName = $(this).val();
+        shift.employee = employeeName === "" ? null
+            : schedule.employees.find(employee => employee.name === employeeName) || null;
+        // The score no longer matches the manually changed schedule.
+        schedule.score = null;
+        renderSchedule(schedule);
+    });
+
+    const pinButton = $("<button type=\"button\" class=\"roster-pin\"/>")
+        .append($(`<span class="fas ${shift.pinned ? "fa-lock" : "fa-lock-open"}"/>`))
+        .attr("title", shift.pinned
+            ? "Vastgezet: de solver verandert deze naam niet. Klik om los te maken."
+            : "Zet deze naam vast: de solver mag ze niet veranderen.")
+        .click(function () {
+            shift.pinned = !shift.pinned;
+            renderSchedule(schedule);
+        });
+    wrapper.append(select, pinButton);
+    return wrapper;
+}
+
+/**
  * A stable pastel color per classroom (combination), derived from the classroom names,
  * so every classroom and combo always gets the same color.
  */
@@ -288,6 +424,49 @@ function comboColor(classrooms) {
     // The golden angle spreads similar names far apart on the color wheel.
     const hue = Math.round((hash * 137.508) % 360);
     return `hsl(${hue}, 70%, 78%)`;
+}
+
+/**
+ * The classes are grouped in three "graden": 1A/1B/2A/2B form Graad 1,
+ * 3A/3B/4A/4B form Graad 2 and 5A/5B/6A/6B form Graad 3. A combo that covers
+ * a full graad is shown as that graad instead of a pile of separate class names.
+ */
+const GRADEN = [
+    {label: "Graad 1", classrooms: ["1A", "1B", "2A", "2B"]},
+    {label: "Graad 2", classrooms: ["3A", "3B", "4A", "4B"]},
+    {label: "Graad 3", classrooms: ["5A", "5B", "6A", "6B"]}
+];
+
+/**
+ * Splits a classroom combination into the full graden it covers plus any leftover
+ * classes, e.g. ["3A", "3B", "4A", "4B", "5A"] splits into ["Graad 2"] and ["5A"].
+ * Matching ignores case; leftover classes keep their original name.
+ */
+function splitGraden(classrooms) {
+    const rest = [...(classrooms || [])];
+    const labels = [];
+    GRADEN.forEach(graad => {
+        if (graad.classrooms.every(classroom => rest.some(c => c.toUpperCase() === classroom))) {
+            graad.classrooms.forEach(classroom =>
+                rest.splice(rest.findIndex(c => c.toUpperCase() === classroom), 1));
+            labels.push(graad.label);
+        }
+    });
+    return {labels: labels, rest: rest};
+}
+
+/**
+ * One clear label for a classroom (combination): full graden collapse to
+ * "Graad 1 + Graad 2" instead of a pile of separate class names;
+ * any other combo keeps showing its classes. Empty means all classrooms.
+ */
+function classroomLabel(classrooms) {
+    if (!classrooms || classrooms.length === 0) {
+        return "Alle klassen";
+    }
+    const split = splitGraden(classrooms);
+    const parts = split.labels.concat(split.rest);
+    return split.labels.length === 0 ? "Klas " + parts.join(" + ") : parts.join(" + ");
 }
 
 function renderRoster(schedule) {
@@ -309,14 +488,44 @@ function renderRoster(schedule) {
             combos.push(shift.classrooms || []);
         }
     });
-    combos.forEach(combo => legend.append(
-        rosterChip(comboColor(combo), combo.length === 0 ? "Alle klassen" : combo.join(" + "))));
+    combos.forEach(combo => {
+        const split = splitGraden(combo);
+        const text = combo.length === 0 ? "Alle klassen" : split.labels.concat(split.rest).join(" + ");
+        legend.append(rosterChip(comboColor(combo), text));
+    });
     // Availability is shown with a colored border around the chips
     legend.append($("<span class=\"ms-3 me-1\"/>").text("Rand:"));
     legend.append(rosterChip("#e9ecef", "Voorkeursdag").css("border", "2px solid " + DESIRED_COLOR));
     legend.append(rosterChip("#e9ecef", "Liever niet").css("border", "2px solid " + UNDESIRED_COLOR));
     legend.append(rosterChip(UNAVAILABLE_COLOR, "Niet beschikbaar", true));
     legend.append(rosterChip("#f4b6b6", "Niet toegewezen").css("border", "2px dashed " + UNAVAILABLE_COLOR));
+    const pinnedLegendChip = rosterChip("#e9ecef", "Vastgezet")
+        .attr("title", "Klik op het slotje naast een naam om die vast te zetten: "
+            + "de solver verandert vastgezette namen niet");
+    pinnedLegendChip.prepend($("<span class=\"fas fa-lock me-1\"/>"));
+    legend.append(pinnedLegendChip);
+    if (schedule.shifts.some(shift => shift.volunteersOnly)) {
+        legend.append(volunteerChip().attr("title",
+            "Wordt niet door de solver ingevuld: schrijf vrijwilligers met pen op het afgedrukte rooster"));
+    }
+    // Max duty minutes per contract type, plus any custom maxima (a hard limit for the solver)
+    const contractMaxChips = [];
+    CONTRACT_TYPES.filter(type => type.ratio != null).forEach(type => {
+        const employee = schedule.employees.find(e => e.workRatio === type.ratio && e.maxWorkingMinutes != null);
+        if (employee != null) {
+            contractMaxChips.push(rosterChip("#e9ecef", `${type.label}: ${employee.maxWorkingMinutes} min`)
+                .attr("title", "Maximum aantal minuten toezicht per week (harde grens)"));
+        }
+    });
+    const customMaxEmployees = schedule.employees
+        .filter(e => e.workRatio == null && e.maxWorkingMinutes != null);
+    if (contractMaxChips.length > 0 || customMaxEmployees.length > 0) {
+        legend.append($("<span class=\"ms-3 me-1\"/>").text("Max. minuten:"));
+        contractMaxChips.forEach(chip => legend.append(chip));
+        customMaxEmployees.forEach(employee => legend.append(
+            rosterChip("#e9ecef", `${employee.name}: ${employee.maxWorkingMinutes} min`)
+                .attr("title", "Aangepast maximum aantal minuten toezicht per week (harde grens)")));
+    }
     roster.append(legend);
 
     // One roster row per shift (same location, hour and classrooms)
@@ -330,6 +539,11 @@ function renderRoster(schedule) {
             rosterRows.push({key: key, location: shift.location, start: start, end: end, classrooms: classrooms});
         }
     });
+    // Order the roster rows by start time, so the shifts read chronologically.
+    rosterRows.sort((a, b) => a.start.localeCompare(b.start)
+        || a.end.localeCompare(b.end)
+        || a.location.localeCompare(b.location)
+        || a.classrooms.join(",").localeCompare(b.classrooms.join(",")));
 
     const shiftDays = [...new Set(schedule.shifts
         .map(shift => JSJoda.LocalDateTime.parse(shift.start).toLocalDate().toString()))].sort();
@@ -363,10 +577,9 @@ function renderRoster(schedule) {
             rowHeader.append($("<div/>").text(rosterRow.location));
             rowHeader.append($("<div class=\"small fw-normal text-muted\"/>")
                 .text(`${rosterRow.start} – ${rosterRow.end}`));
-            if (rosterRow.classrooms.length > 0) {
-                rowHeader.append($("<div class=\"mt-1\"/>").append(rosterRow.classrooms.map(classroom =>
-                    `<span class="badge me-1" style="background-color:${comboColor([classroom])}">Klas ${classroom}</span>`).join("")));
-            }
+            rowHeader.append($("<div class=\"mt-1\"/>").append(
+                rosterChip(comboColor(rosterRow.classrooms), classroomLabel(rosterRow.classrooms))
+                    .css("white-space", "normal")));
             tr.append(rowHeader);
             weekDates.forEach(date => {
                 const dayString = date.toString();
@@ -387,28 +600,11 @@ function renderRoster(schedule) {
                         && JSJoda.LocalDateTime.parse(shift.end).toLocalTime().toString() === rosterRow.end
                         && (shift.classrooms || []).join(",") === rosterRow.classrooms.join(","))
                     .forEach(shift => {
-                        if (shift.employee == null) {
-                            td.append(rosterChip("#f4b6b6", "Niet toegewezen")
-                                .css("border", "2px dashed " + UNAVAILABLE_COLOR));
+                        if (shift.volunteersOnly) {
+                            td.append(volunteerChip());
                             return;
                         }
-                        const statusColor = getShiftColor(shift, shift.employee);
-                        let chip;
-                        if (statusColor === UNAVAILABLE_COLOR) {
-                            // A hard violation keeps the fully red chip so it stands out.
-                            chip = rosterChip(UNAVAILABLE_COLOR, shift.employee.name, true);
-                        } else {
-                            chip = rosterChip(comboColor(shift.classrooms), shift.employee.name);
-                            if (statusColor === DESIRED_COLOR) {
-                                chip.css("border", "2px solid " + DESIRED_COLOR);
-                            } else if (statusColor === UNDESIRED_COLOR) {
-                                chip.css("border", "2px solid " + UNDESIRED_COLOR);
-                            }
-                        }
-                        if (shift.employee.classroom != null) {
-                            chip.attr("title", "Klas " + shift.employee.classroom);
-                        }
-                        td.append(chip);
+                        td.append(assignmentPicker(schedule, shift));
                     });
                 if (td.children().length === 0) {
                     // This shift does not occur on this day (excluded weekday).
@@ -432,12 +628,47 @@ const DAY_CHECKBOXES = [
     {value: 4, label: "do"}, {value: 5, label: "vr"}
 ];
 
+/**
+ * The teacher's contract decides the maximum amount of duty time they can be given:
+ * the total shift time is divided over all teachers, weighted by the contract ratio
+ * (voltijds counts 1, 4/5 counts 0.8, halftijds 0.5). "Aangepast" (custom) has no ratio
+ * and instead uses the maxMinutes the user fills in.
+ */
+const CONTRACT_TYPES = [
+    {value: "FULL_TIME", label: "Voltijds", ratio: 1},
+    {value: "FOUR_FIFTHS", label: "4/5", ratio: 0.8},
+    {value: "PART_TIME", label: "Halftijds", ratio: 0.5},
+    {value: "CUSTOM", label: "Aangepast", ratio: null}
+];
+
+function contractRatio(teacher) {
+    const contractType = CONTRACT_TYPES.find(type => type.value === (teacher.contract || "FULL_TIME"));
+    return contractType != null ? contractType.ratio : 1;
+}
+
+function contractLabel(employee) {
+    if (employee.workRatio == null) {
+        return "Aangepast";
+    }
+    const contractType = CONTRACT_TYPES.find(type => type.ratio === employee.workRatio);
+    return contractType != null ? contractType.label : Math.round(employee.workRatio * 100) + "%";
+}
+
+const WEDNESDAY = 3;
+// The working day is split in two halves at 12:25: morning 08:00-12:25, afternoon 12:25-17:00.
+// Wednesday never has an afternoon.
+const DAY_START_TIME = "08:00";
+const MIDDAY_SPLIT_TIME = "12:25";
+const DAY_END_TIME = "17:00";
+
 let editDataModal = null;
 let scheduleConfig = loadScheduleConfig();
 
 function defaultScheduleConfig() {
     // A contract cycle with mostly full-time teachers and some part-time Mon/Wed/Fri or Tue/Thu.
-    const patterns = [[1, 2, 3, 4, 5], [1, 2, 3, 4, 5], [1, 2, 3, 4, 5], [1, 3, 5], [2, 4]];
+    // Wednesday never has an afternoon, so the afternoon patterns skip Wednesday.
+    const morningPatterns = [[1, 2, 3, 4, 5], [1, 2, 3, 4, 5], [1, 2, 3, 4, 5], [1, 3, 5], [2, 4]];
+    const afternoonPatterns = [[1, 2, 4, 5], [1, 2, 4, 5], [1, 2, 4, 5], [1, 5], [2, 4]];
     const classrooms = ["1A", "1B", "2A", "2B"];
     const names = ["Amy Cole", "Beth Fox", "Carl Green", "Dan Jones", "Elsa King", "Flo Li",
         "Gus Poe", "Hugo Rye", "Ivy Smith", "Jay Watt", "Amy Fox", "Beth Green"];
@@ -458,8 +689,13 @@ function defaultScheduleConfig() {
         ],
         teachers: names.map((name, i) => ({
             name: name,
-            workingDays: [...patterns[i % patterns.length]],
+            // Full-time teachers work the whole week; part-time teachers work Mon/Wed/Fri or Tue/Thu.
+            contract: i % morningPatterns.length < 3 ? "FULL_TIME" : "PART_TIME",
+            maxMinutes: null,
+            workingMornings: [...morningPatterns[i % morningPatterns.length]],
+            workingAfternoons: [...afternoonPatterns[i % afternoonPatterns.length]],
             classroom: classrooms[i % classrooms.length],
+            alternativeClassrooms: [],
             undesiredDays: [],
             desiredDays: [],
             exceptions: []
@@ -473,17 +709,7 @@ function loadScheduleConfig() {
         if (stored != null) {
             const config = JSON.parse(stored);
             if (Array.isArray(config.shifts) && Array.isArray(config.teachers)) {
-                // Migrated: day exclusion moved from the whole schedule to each shift
-                const legacyExcluded = config.daysWithoutDuty || config.daysWithoutLunch;
-                if (Array.isArray(legacyExcluded)) {
-                    config.shifts.forEach(shiftDef => {
-                        if (!Array.isArray(shiftDef.excludedDays)) {
-                            shiftDef.excludedDays = [...legacyExcluded];
-                        }
-                    });
-                    delete config.daysWithoutDuty;
-                    delete config.daysWithoutLunch;
-                }
+                migrateScheduleConfig(config);
                 return config;
             }
         }
@@ -491,6 +717,52 @@ function loadScheduleConfig() {
         console.warn("Ignoring invalid stored config.", e);
     }
     return null;
+}
+
+/**
+ * Migrates older config shapes in place: day exclusion moved from the whole schedule to
+ * each shift, and full working days were split into mornings (before 12:25) and afternoons
+ * (after 12:25). Wednesday never has an afternoon.
+ */
+function migrateScheduleConfig(config) {
+    if (!Array.isArray(config.shifts) || !Array.isArray(config.teachers)) {
+        return;
+    }
+    // Migrated: day exclusion moved from the whole schedule to each shift
+    const legacyExcluded = config.daysWithoutDuty || config.daysWithoutLunch;
+    if (Array.isArray(legacyExcluded)) {
+        config.shifts.forEach(shiftDef => {
+            if (!Array.isArray(shiftDef.excludedDays)) {
+                shiftDef.excludedDays = [...legacyExcluded];
+            }
+        });
+        delete config.daysWithoutDuty;
+        delete config.daysWithoutLunch;
+    }
+    config.teachers.forEach(teacher => {
+        if (teacher == null) {
+            return;
+        }
+        // Migrated: teachers got a contract deciding their maximum duty time.
+        if (typeof teacher.contract !== "string") {
+            teacher.contract = "FULL_TIME";
+            teacher.maxMinutes = null;
+        }
+        // Migrated: working days split into a morning and an afternoon half.
+        if (Array.isArray(teacher.workingDays)) {
+            if (!Array.isArray(teacher.workingMornings)) {
+                teacher.workingMornings = [...teacher.workingDays];
+            }
+            if (!Array.isArray(teacher.workingAfternoons)) {
+                teacher.workingAfternoons = teacher.workingDays.filter(day => day !== WEDNESDAY);
+            }
+            delete teacher.workingDays;
+        }
+        // Wednesday never has an afternoon.
+        if (Array.isArray(teacher.workingAfternoons)) {
+            teacher.workingAfternoons = teacher.workingAfternoons.filter(day => day !== WEDNESDAY);
+        }
+    });
 }
 
 function isValidScheduleConfig(config) {
@@ -503,7 +775,8 @@ function isValidScheduleConfig(config) {
         && Array.isArray(config.teachers)
         && config.teachers.every(teacher => teacher != null
             && typeof teacher.name === "string" && teacher.name.length > 0
-            && Array.isArray(teacher.workingDays));
+            && Array.isArray(teacher.workingMornings)
+            && Array.isArray(teacher.workingAfternoons));
 }
 
 /**
@@ -549,20 +822,76 @@ function dayCheckboxes(cssClass, checkedValues) {
     });
 }
 
+/**
+ * Two checkboxes per weekday, stacked under the day label: one for the morning
+ * (before 12:25) and one for the afternoon (after 12:25).
+ * Wednesday never has an afternoon, so that checkbox is disabled.
+ */
+function dayHalfCheckboxes(mornings, afternoons, morningClass, afternoonClass) {
+    return DAY_CHECKBOXES.map(day => {
+        const wrapper = $("<div class=\"d-inline-block text-center me-2\"/>");
+        wrapper.append($("<div class=\"small text-muted\"/>").text(day.label));
+        const morning = $("<div class=\"form-check mb-0\"/>");
+        morning.append($("<input class=\"form-check-input\" type=\"checkbox\"/>")
+            .addClass(morningClass)
+            .attr("value", day.value)
+            .attr("title", "Voormiddag (voor 12:25)")
+            .prop("checked", mornings.includes(day.value)));
+        morning.append($("<label class=\"form-check-label small\">vm</label>"));
+        const afternoon = $("<div class=\"form-check mb-0\"/>");
+        afternoon.append($("<input class=\"form-check-input\" type=\"checkbox\"/>")
+            .addClass(afternoonClass)
+            .attr("value", day.value)
+            .attr("title", day.value === WEDNESDAY
+                ? "Woensdagnamiddag is altijd vrij"
+                : "Namiddag (na 12:25)")
+            .prop("checked", day.value !== WEDNESDAY && afternoons.includes(day.value))
+            .prop("disabled", day.value === WEDNESDAY));
+        afternoon.append($("<label class=\"form-check-label small\">nm</label>"));
+        wrapper.append(morning, afternoon);
+        return wrapper;
+    });
+}
+
+function workingDayCheckboxes(teacher) {
+    return dayHalfCheckboxes(teacher.workingMornings || [], teacher.workingAfternoons || [],
+        "cfg-working-morning", "cfg-working-afternoon");
+}
+
+/**
+ * One alternative classroom row: the classroom and the weekdays and day halves
+ * on which the teacher can also be planned in that classroom. On those day halves
+ * the alternative classroom takes priority over the teacher's own classroom and
+ * the teacher is only planned there in breaks that fall inside the day half.
+ */
+function alternativeClassroomRow(entry) {
+    const row = $("<div class=\"d-flex align-items-center gap-2 flex-wrap mb-1 cfg-alt-classroom-row\"/>");
+    row.append($("<span class=\"small text-muted\">ook in klas:</span>"));
+    row.append($("<input class=\"form-control cfg-alt-classroom\" list=\"cfgClassroomList\" "
+        + "style=\"max-width: 7rem\" placeholder=\"bv. 2B\"/>").val(entry.classroom || ""));
+    dayHalfCheckboxes(entry.mornings || [], entry.afternoons || [],
+        "cfg-alt-morning", "cfg-alt-afternoon").forEach(check => row.append(check));
+    const removeButton = $("<button type=\"button\" class=\"btn btn-outline-danger btn-sm\" "
+        + "title=\"Alternatieve klas verwijderen\"><span class=\"fas fa-trash\"></span></button>");
+    removeButton.click(() => row.remove());
+    row.append(removeButton);
+    return row;
+}
+
 function exceptionRow(exception) {
     const row = $("<div class=\"d-flex gap-2 align-items-center flex-wrap mb-1 cfg-exception\"/>");
     const dateInput = $("<input type=\"date\" class=\"form-control cfg-exc-date\" style=\"max-width: 10.5rem\"/>")
         .val(exception.date || "");
     const typeSelect = $("<select class=\"form-select cfg-exc-type\" style=\"max-width: 12.5rem\">"
-        + "<option value=\"unavailable\">Vrij (niet beschikbaar)</option>"
+        + "<option value=\"unavailable\">Niet beschikbaar</option>"
         + "<option value=\"undesired\">Liever niet</option>"
         + "<option value=\"desired\">Voorkeur</option>"
         + "</select>").val(exception.type || "unavailable");
     const fromInput = $("<input type=\"time\" class=\"form-control cfg-exc-from\" style=\"max-width: 6rem\" "
-        + "title=\"Enkel voor vrij-uitzonderingen: begin van de niet-beschikbare periode. Leeg betekent de hele dag.\"/>")
+        + "title=\"Begin van de periode. Leeg betekent de hele dag.\"/>")
         .val(exception.from || "");
     const toInput = $("<input type=\"time\" class=\"form-control cfg-exc-to\" style=\"max-width: 6rem\" "
-        + "title=\"Enkel voor vrij-uitzonderingen: einde van de niet-beschikbare periode. Leeg betekent de hele dag.\"/>")
+        + "title=\"Einde van de periode. Leeg betekent de hele dag.\"/>")
         .val(exception.to || "");
     const repeatsInput = $("<input type=\"number\" min=\"0\" max=\"52\" class=\"form-control cfg-exc-repeats\" style=\"max-width: 5rem\" "
         + "title=\"0 = elke week herhalen op deze weekdag; een hoger getal herhaalt de datum dat aantal extra weken\"/>")
@@ -587,8 +916,32 @@ function teacherCard(teacher) {
     header.append($("<span class=\"small text-muted\">klas:</span>"));
     header.append($("<input class=\"form-control cfg-teacher-classroom\" list=\"cfgClassroomList\" "
         + "style=\"max-width: 7rem\" placeholder=\"bv. 1A\"/>").val(teacher.classroom || ""));
+
+    header.append($("<span class=\"small text-muted\">contract:</span>"));
+    const contractSelect = $("<select class=\"form-select cfg-teacher-contract\" style=\"max-width: 9rem\" "
+        + "title=\"Het contract bepaalt het maximum aantal minuten toezicht per week: "
+        + "de wekelijkse dienstminuten worden verdeeld naar rato van het contract\"/>"
+        + CONTRACT_TYPES.map(type => `<option value="${type.value}">${type.label}</option>`).join("")
+        + "</select>").val(teacher.contract || "FULL_TIME");
+    const maxMinutesLabel = $("<span class=\"small text-muted cfg-teacher-max-minutes-label\">max.</span>");
+    const maxMinutesInput = $("<input type=\"number\" min=\"0\" step=\"5\" "
+        + "class=\"form-control cfg-teacher-max-minutes\" style=\"max-width: 6rem\" "
+        + "title=\"Maximum aantal minuten toezicht per week\"/>")
+        .val(teacher.maxMinutes != null ? teacher.maxMinutes : "");
+    const maxMinutesUnit = $("<span class=\"small text-muted cfg-teacher-max-minutes-label\">min</span>");
+    contractSelect.change(() => {
+        const custom = contractSelect.val() === "CUSTOM";
+        maxMinutesLabel.toggle(custom);
+        maxMinutesInput.toggle(custom);
+        maxMinutesUnit.toggle(custom);
+    });
+    header.append(contractSelect, maxMinutesLabel, maxMinutesInput, maxMinutesUnit);
+    maxMinutesLabel.toggle(contractSelect.val() === "CUSTOM");
+    maxMinutesInput.toggle(contractSelect.val() === "CUSTOM");
+    maxMinutesUnit.toggle(contractSelect.val() === "CUSTOM");
+
     header.append($("<span class=\"small text-muted\">werkt:</span>"));
-    dayCheckboxes("cfg-working-day", teacher.workingDays).forEach(check => header.append(check));
+    workingDayCheckboxes(teacher).forEach(check => header.append(check));
 
     header.append($("<span class=\"small text-muted ms-2\">|</span>"));
     header.append($("<span class=\"small text-muted\">liever niet:</span>"));
@@ -603,13 +956,23 @@ function teacherCard(teacher) {
     removeButton.click(() => card.remove());
     header.append(removeButton);
 
+    const alternativeClassrooms = $("<div class=\"cfg-alternative-classrooms mt-2\"/>");
+    (teacher.alternativeClassrooms || [])
+        .forEach(entry => alternativeClassrooms.append(alternativeClassroomRow(entry)));
+    const addAlternativeClassroomButton = $("<button type=\"button\" class=\"btn btn-outline-secondary btn-sm mt-1\" "
+        + "title=\"Laat deze leerkracht op de aangevinkte dagdelen ook een andere klas dekken; "
+        + "die klas krijgt daar voorrang op de eigen klas\">"
+        + "<span class=\"fas fa-plus\"></span> Andere klas</button>");
+    addAlternativeClassroomButton.click(() => alternativeClassrooms.append(
+        alternativeClassroomRow({classroom: "", mornings: [], afternoons: []})));
+
     const exceptions = $("<div class=\"cfg-exceptions mt-2\"/>");
-    teacher.exceptions.forEach(exception => exceptions.append(exceptionRow(exception)));
+    (teacher.exceptions || []).forEach(exception => exceptions.append(exceptionRow(exception)));
     const addExceptionButton = $("<button type=\"button\" class=\"btn btn-outline-secondary btn-sm mt-1\">"
-        + "<span class=\"fas fa-plus\"></span> Vrij-uitzondering</button>");
+        + "<span class=\"fas fa-plus\"></span> Uitzondering</button>");
     addExceptionButton.click(() => exceptions.append(exceptionRow({date: "", type: "unavailable", repeats: 0})));
 
-    body.append(header, exceptions, addExceptionButton);
+    body.append(header, alternativeClassrooms, addAlternativeClassroomButton, exceptions, addExceptionButton);
     card.append(body);
     return card;
 }
@@ -625,9 +988,10 @@ function shiftRow(shiftDef) {
     row.append($("<td/>").append($("<input class=\"form-control cfg-shift-classrooms\" "
         + "placeholder=\"bv. 1A, 1B (leeg = alle klassen)\"/>")
         .val((shiftDef.classrooms || []).join(", "))));
-    row.append($("<td/>").append($("<input type=\"number\" min=\"1\" max=\"10\" "
-        + "class=\"form-control cfg-shift-teachers\" title=\"Aantal leerkrachten dat tegelijk op deze dienst nodig is\"/>")
-        .val(shiftDef.teachers || 1)));
+    row.append($("<td/>").append($("<input type=\"number\" min=\"0\" max=\"10\" "
+        + "class=\"form-control cfg-shift-teachers\" title=\"Aantal leerkrachten dat tegelijk op deze dienst nodig is; "
+        + "0 = vrijwilligersdienst: gaat niet naar de solver en staat enkel op het rooster om met pen in te vullen\"/>")
+        .val(shiftDef.teachers != null ? shiftDef.teachers : 1)));
     const excludedCell = $("<td class=\"text-nowrap\"/>");
     dayCheckboxes("cfg-shift-excluded-day", shiftDef.excludedDays || [])
         .forEach(check => excludedCell.append(check));
@@ -662,7 +1026,9 @@ function renderDataEditor() {
                 + "welke klassen ze dekt en hoeveel leerkrachten er tegelijk nodig zijn. "
                 + "Laat het klassenveld leeg om de dienst "
                 + "voor alle klassen te laten gelden. Vink dagen aan bij \"Niet op\" om de dienst "
-                + "op die weekdagen over te slaan (bijvoorbeeld geen middagtoezicht op woensdag).")));
+                + "op die weekdagen over te slaan (bijvoorbeeld geen middagtoezicht op woensdag). "
+                + "Zet het aantal leerkrachten op 0 voor een vrijwilligersdienst: die gaat niet naar "
+                + "de solver en staat enkel op het rooster om vrijwilligers met pen in te schrijven.")));
     const shiftsTable = $("<table class=\"table table-sm align-middle mb-1\"/>")
         .append($("<thead/>").append($("<tr/>")
             .append($("<th/>").text("Locatie"))
@@ -688,12 +1054,24 @@ function renderDataEditor() {
         .append($("<p class=\"card-text small text-muted\"/>")
             .text("Een leerkracht past enkel bij diensten die zijn of haar eigen klas dekken; "
                 + "laat de klas leeg om de leerkracht voor elke dienst in te zetten. "
-                + "Niet-aangevinkte weekdagen worden niet-beschikbare dagen. "
+                + "Met \"Andere klas\" kan een leerkracht op de aangevinkte dagen en dagdelen "
+                + "ook diensten van een andere klas dekken, zo kan ze doorheen de week "
+                + "in meerdere klassen worden ingepland. "
+                + "Op die dagdelen krijgt de andere klas voorrang op de eigen klas en wordt "
+                + "de leerkracht er enkel ingepland voor pauzes die binnen het dagdeel vallen. "
+                + "Het contract bepaalt het maximum aantal minuten toezicht per week: "
+                + "de wekelijkse dienstminuten worden verdeeld over de leerkrachten "
+                + "naar rato van het contract (voltijds telt 1, 4/5 telt 0,8 en halftijds 0,5). "
+                + "Kies \"Aangepast\" om zelf een maximum aantal minuten in te vullen. "
+                + "Vink per weekdag aan welke dagdelen de leerkracht werkt: voormiddag (vm, voor 12:25) "
+                + "en namiddag (nm, na 12:25); woensdag heeft nooit een namiddag. "
+                + "Niet-aangevinkte dagdelen zijn niet-beschikbaar. "
                 + "Dagen onder \"Liever niet\" of \"Voorkeur\" sturen de solver weekelijks bij "
-                + "(zachte voorkeur). Een uitzondering geldt op een datum en wordt op dezelfde weekdag "
+                + "(zachte voorkeur) en gelden voor de volledige schooldag (08:00 - 17:00). "
+                + "Een uitzondering geldt op een datum en wordt op dezelfde weekdag "
                 + "wekelijks herhaald zolang de herhaling 0 is; een hoger getal herhaalt de datum "
                 + "dat aantal extra weken. "
-                + "Vul van/tot-uren in om een vrij-uitzondering te beperken tot een deel van de dag.")));
+                + "Vul van/tot-uren in om een uitzondering te beperken tot een deel van de dag.")));
     // Suggest the classrooms used by the shifts when filling in a teacher's classroom
     const classroomSuggestions = [...new Set(config.shifts.flatMap(shiftDef => shiftDef.classrooms || []))].sort();
     const classroomList = $("<datalist id=\"cfgClassroomList\"/>");
@@ -704,7 +1082,9 @@ function renderDataEditor() {
     const addTeacherButton = $("<button type=\"button\" class=\"btn btn-outline-secondary btn-sm mt-2\">"
         + "<span class=\"fas fa-plus\"></span> Leerkracht</button>");
     addTeacherButton.click(() => teachersContainer.append(
-        teacherCard({name: "", classroom: "", workingDays: [1, 2, 3, 4, 5], exceptions: []})));
+        teacherCard({name: "", classroom: "", alternativeClassrooms: [], contract: "FULL_TIME", maxMinutes: null,
+            workingMornings: [1, 2, 3, 4, 5], workingAfternoons: [1, 2, 4, 5],
+            exceptions: []})));
     teachersCard.children().first().append(teachersContainer, addTeacherButton);
     body.append(teachersCard);
 }
@@ -720,12 +1100,14 @@ function readDataEditor() {
         const classrooms = ($(this).find(".cfg-shift-classrooms").val() || "")
             .split(",").map(classroom => classroom.trim()).filter(classroom => classroom.length > 0);
         if (location.length > 0) {
+            // 0 teachers = a volunteers-only shift that is not sent to the solver.
+            const teacherCount = parseInt($(this).find(".cfg-shift-teachers").val());
             config.shifts.push({
                 location: location,
                 start: $(this).find(".cfg-shift-start").val() || "12:00",
                 end: $(this).find(".cfg-shift-end").val() || "13:00",
                 classrooms: classrooms,
-                teachers: Math.max(1, parseInt($(this).find(".cfg-shift-teachers").val()) || 1),
+                teachers: Math.max(0, isNaN(teacherCount) ? 1 : teacherCount),
                 excludedDays: $(this).find(".cfg-shift-excluded-day:checked").map((i, e) => parseInt(e.value)).get()
             });
         }
@@ -735,7 +1117,10 @@ function readDataEditor() {
         if (name.length === 0) {
             return;
         }
-        const workingDays = $(this).find(".cfg-working-day:checked").map((i, e) => parseInt(e.value)).get();
+        const workingMornings = $(this).find(".cfg-working-morning:checked").map((i, e) => parseInt(e.value)).get();
+        // Wednesday never has an afternoon.
+        const workingAfternoons = $(this).find(".cfg-working-afternoon:checked").map((i, e) => parseInt(e.value)).get()
+            .filter(day => day !== WEDNESDAY);
         const exceptions = [];
         $(this).find(".cfg-exception").each(function () {
             const date = $(this).find(".cfg-exc-date").val();
@@ -749,10 +1134,28 @@ function readDataEditor() {
                 });
             }
         });
+        const alternativeClassrooms = [];
+        $(this).find(".cfg-alt-classroom-row").each(function () {
+            const classroom = $(this).find(".cfg-alt-classroom").val().trim();
+            const mornings = $(this).find(".cfg-alt-morning:checked").map((i, e) => parseInt(e.value)).get();
+            const afternoons = $(this).find(".cfg-alt-afternoon:checked").map((i, e) => parseInt(e.value)).get()
+                .filter(day => day !== WEDNESDAY);
+            // Skip rows without a classroom or without any checked day half.
+            if (classroom.length > 0 && (mornings.length > 0 || afternoons.length > 0)) {
+                alternativeClassrooms.push({classroom: classroom, mornings: mornings, afternoons: afternoons});
+            }
+        });
+        const contract = $(this).find(".cfg-teacher-contract").val() || "FULL_TIME";
         config.teachers.push({
             name: name,
             classroom: $(this).find(".cfg-teacher-classroom").val().trim(),
-            workingDays: workingDays,
+            alternativeClassrooms: alternativeClassrooms,
+            contract: contract,
+            maxMinutes: contract === "CUSTOM"
+                ? Math.max(0, parseInt($(this).find(".cfg-teacher-max-minutes").val()) || 0)
+                : null,
+            workingMornings: workingMornings,
+            workingAfternoons: workingAfternoons,
             undesiredDays: $(this).find(".cfg-undesired-day:checked").map((i, e) => parseInt(e.value)).get(),
             desiredDays: $(this).find(".cfg-desired-day:checked").map((i, e) => parseInt(e.value)).get(),
             exceptions: exceptions
@@ -774,10 +1177,11 @@ function uploadConfigFile(file) {
             showWarning("Kon het bestand niet lezen.", "Dit is geen geldig JSON-bestand: " + e.message);
             return;
         }
+        migrateScheduleConfig(config);
         if (!isValidScheduleConfig(config)) {
             showWarning("Ongeldig configuratiebestand.",
                 "Het bestand moet \"weeks\" (getal), \"shifts\" (locatie, start, einde) "
-                + "en \"teachers\" (naam, workingDays) bevatten.");
+                + "en \"teachers\" (naam, workingMornings, workingAfternoons) bevatten.");
             return;
         }
         applyScheduleConfig(config);
@@ -843,25 +1247,62 @@ function generateScheduleFromConfig(config) {
         const unavailablePeriods = [];
         const undesiredDates = new Set();
         const desiredDates = new Set();
-        // Weekdays that are not part of the teacher's contract are unavailable.
+        const undesiredPeriods = [];
+        const desiredPeriods = [];
+        const alternativeClassroomPeriods = [];
+        // Day halves that are not part of the teacher's contract are unavailable:
+        // the morning (08:00-12:25), the afternoon (12:25-17:00) or the whole day.
+        // Wednesday never has an afternoon.
         schoolDays.forEach(schoolDay => {
-            if (!teacher.workingDays.includes(schoolDay.dayOfWeek().value())) {
+            const dayOfWeek = schoolDay.dayOfWeek().value();
+            const worksMorning = (teacher.workingMornings || []).includes(dayOfWeek);
+            const worksAfternoon = dayOfWeek !== WEDNESDAY
+                && (teacher.workingAfternoons || []).includes(dayOfWeek);
+            if (!worksMorning && !worksAfternoon) {
                 unavailableDates.add(schoolDay.toString());
+            } else if (!worksMorning) {
+                unavailablePeriods.push(
+                    {date: schoolDay.toString(), from: DAY_START_TIME, to: MIDDAY_SPLIT_TIME});
+            } else if (!worksAfternoon) {
+                unavailablePeriods.push(
+                    {date: schoolDay.toString(), from: MIDDAY_SPLIT_TIME, to: DAY_END_TIME});
             }
         });
-        // Weekly recurring soft day preferences.
+        // Weekly recurring soft day preferences cover the whole school day (08:00 - 17:00).
         schoolDays.forEach(schoolDay => {
             if ((teacher.undesiredDays || []).includes(schoolDay.dayOfWeek().value())) {
-                undesiredDates.add(schoolDay.toString());
+                undesiredPeriods.push({date: schoolDay.toString(), from: DAY_START_TIME, to: DAY_END_TIME});
             }
             if ((teacher.desiredDays || []).includes(schoolDay.dayOfWeek().value())) {
-                desiredDates.add(schoolDay.toString());
+                desiredPeriods.push({date: schoolDay.toString(), from: DAY_START_TIME, to: DAY_END_TIME});
             }
+        });
+        // Alternative classrooms: on the toggled weekdays and day halves the teacher
+        // also matches shifts of another classroom, so they can be planned
+        // in multiple classrooms across the week. On those day halves the alternative
+        // classroom takes priority over the teacher's own classroom (soft constraint),
+        // and the match only counts for breaks overlapping the day half (hard constraint).
+        // Wednesday never has an afternoon.
+        (teacher.alternativeClassrooms || []).forEach(alternative => {
+            if (!alternative.classroom) {
+                return;
+            }
+            schoolDays.forEach(schoolDay => {
+                const dayOfWeek = schoolDay.dayOfWeek().value();
+                if ((alternative.mornings || []).includes(dayOfWeek)) {
+                    alternativeClassroomPeriods.push({classroom: alternative.classroom,
+                        date: schoolDay.toString(), from: DAY_START_TIME, to: MIDDAY_SPLIT_TIME});
+                }
+                if (dayOfWeek !== WEDNESDAY && (alternative.afternoons || []).includes(dayOfWeek)) {
+                    alternativeClassroomPeriods.push({classroom: alternative.classroom,
+                        date: schoolDay.toString(), from: MIDDAY_SPLIT_TIME, to: DAY_END_TIME});
+                }
+            });
         });
         // Exceptions, optionally repeated weekly.
         // repeats = 0 repeats the exception every week on the same weekday throughout the schedule;
         // repeats = n applies it on the given date plus n extra weeks.
-        teacher.exceptions.forEach(exception => {
+        (teacher.exceptions || []).forEach(exception => {
             const baseDate = JSJoda.LocalDate.parse(exception.date);
             const occurrences = [];
             if (exception.repeats > 0) {
@@ -883,9 +1324,16 @@ function generateScheduleFromConfig(config) {
                 if (occurrence.compareTo(startMonday) < 0 || occurrence.compareTo(lastDay) > 0) {
                     return;
                 }
-                if (exception.type === "unavailable" && exception.from && exception.to) {
-                    // Part of the day off-duty instead of the whole day
-                    unavailablePeriods.push({date: occurrence.toString(), from: exception.from, to: exception.to});
+                if (exception.from && exception.to) {
+                    // Part of the day instead of the whole day, for every exception type.
+                    const period = {date: occurrence.toString(), from: exception.from, to: exception.to};
+                    if (exception.type === "undesired") {
+                        undesiredPeriods.push(period);
+                    } else if (exception.type === "desired") {
+                        desiredPeriods.push(period);
+                    } else {
+                        unavailablePeriods.push(period);
+                    }
                 } else {
                     const target = exception.type === "undesired" ? undesiredDates
                         : exception.type === "desired" ? desiredDates : unavailableDates;
@@ -897,10 +1345,13 @@ function generateScheduleFromConfig(config) {
             name: teacher.name,
             skills: ["Teacher"],
             classroom: teacher.classroom || null,
+            alternativeClassroomPeriods: alternativeClassroomPeriods,
             unavailableDates: [...unavailableDates],
             unavailablePeriods: unavailablePeriods,
             undesiredDates: [...undesiredDates],
-            desiredDates: [...desiredDates]
+            desiredDates: [...desiredDates],
+            undesiredPeriods: undesiredPeriods,
+            desiredPeriods: desiredPeriods
         };
     });
 
@@ -917,9 +1368,25 @@ function generateScheduleFromConfig(config) {
             if ((shiftDef.excludedDays || []).includes(schoolDay.dayOfWeek().value())) {
                 return;
             }
+            const teacherCount = shiftDef.teachers != null ? shiftDef.teachers : 1;
+            if (teacherCount === 0) {
+                // A shift without teachers is not sent to the solver: it only appears on the
+                // (printed) roster so that volunteers can be written in with pen.
+                shifts.push({
+                    id: String(id++),
+                    start: schoolDay.atTime(JSJoda.LocalTime.parse(shiftDef.start)).toString(),
+                    end: schoolDay.atTime(JSJoda.LocalTime.parse(shiftDef.end)).toString(),
+                    location: shiftDef.location,
+                    requiredSkill: "Teacher",
+                    classrooms: shiftDef.classrooms.length > 0 ? shiftDef.classrooms : allClassrooms,
+                    employee: null,
+                    volunteersOnly: true
+                });
+                return;
+            }
             // A shift that needs several teachers at once becomes that many shifts;
             // each one gets its own teacher.
-            for (let teacherSeat = 0; teacherSeat < (shiftDef.teachers || 1); teacherSeat++) {
+            for (let teacherSeat = 0; teacherSeat < teacherCount; teacherSeat++) {
                 shifts.push({
                     id: String(id++),
                     start: schoolDay.atTime(JSJoda.LocalTime.parse(shiftDef.start)).toString(),
@@ -933,11 +1400,40 @@ function generateScheduleFromConfig(config) {
         });
     });
 
+    // The maximum duty time per teacher per week (a hard constraint for the solver): the total
+    // weekly shift time is divided over all teachers, weighted by their contract ratio. Teachers
+    // with a custom contract get exactly their configured weekly maximum and stay out of the
+    // weighted division. Volunteer shifts take no teacher time, so they do not count towards
+    // the total.
+    const totalShiftMinutes = shifts.filter(shift => !shift.volunteersOnly)
+        .reduce((total, shift) => total
+        + JSJoda.LocalDateTime.parse(shift.start)
+            .until(JSJoda.LocalDateTime.parse(shift.end), JSJoda.ChronoUnit.MINUTES), 0);
+    // Every week of the schedule has the same shifts, so the weekly total is the total divided
+    // over the number of weeks.
+    const weeklyShiftMinutes = totalShiftMinutes / config.weeks;
+    const ratioSum = config.teachers
+        .map(teacher => contractRatio(teacher))
+        .filter(ratio => ratio != null)
+        .reduce((sum, ratio) => sum + ratio, 0);
+    // Minute limits are rounded up to the nearest multiple of 5.
+    const roundUpTo5 = minutes => Math.ceil(minutes / 5) * 5;
+    config.teachers.forEach((teacher, index) => {
+        const ratio = contractRatio(teacher);
+        employees[index].workRatio = ratio;
+        employees[index].maxWorkingMinutes = ratio == null
+            ? roundUpTo5(Math.max(0, parseInt(teacher.maxMinutes) || 0))
+            : (ratioSum > 0 ? roundUpTo5(weeklyShiftMinutes * ratio / ratioSum) : null);
+    });
+
     return {employees: employees, shifts: shifts, score: null, solverStatus: null};
 }
 
 function solve() {
-    $.post("/schedules", JSON.stringify(loadedSchedule), function (data) {
+    // Volunteer shifts (0 teachers) are purely visual and are not sent to the solver.
+    const solverSchedule = {...loadedSchedule,
+        shifts: loadedSchedule.shifts.filter(shift => !shift.volunteersOnly)};
+    $.post("/schedules", JSON.stringify(solverSchedule), function (data) {
         scheduleId = data;
         refreshSolvingButtons(true);
     }).fail(function (xhr, ajaxOptions, thrownError) {
