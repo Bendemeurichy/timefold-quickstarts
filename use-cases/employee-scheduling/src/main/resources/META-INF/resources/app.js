@@ -46,6 +46,17 @@ $(document).ready(function () {
     $("#exportConfigButton").click(function () {
         exportConfig();
     });
+    $("#uploadRosterButton").click(function () {
+        $("#rosterFileInput").click();
+    });
+    $("#rosterFileInput").change(function (event) {
+        uploadRosterFile(event.target.files[0]);
+        // Reset so selecting the same file again still triggers a change event.
+        event.target.value = "";
+    });
+    $("#exportRosterButton").click(function () {
+        exportRoster();
+    });
     $("#generateDataButton").click(function () {
         generateDataFromEditor();
     });
@@ -147,6 +158,25 @@ function refreshSchedule() {
         });
 }
 
+/**
+ * The total planned minutes per teacher name: the sum of the lengths of all shifts
+ * assigned to that teacher, limited to the given dates (all dates when null).
+ * Shown as a tooltip on the teacher's name in the timeline (the whole schedule) and
+ * on the teacher's chips on the roster (per week, just like the weekly minute limit).
+ */
+function plannedMinutesPerEmployee(schedule, dates) {
+    const daySet = dates == null ? null : new Set(dates.map(date => date.toString()));
+    const plannedMinutes = {};
+    schedule.shifts.forEach(shift => {
+        if (shift.employee != null && (daySet == null || daySet.has(shift.start.substring(0, 10)))) {
+            plannedMinutes[shift.employee.name] = (plannedMinutes[shift.employee.name] || 0)
+                + JSJoda.LocalDateTime.parse(shift.start)
+                    .until(JSJoda.LocalDateTime.parse(shift.end), JSJoda.ChronoUnit.MINUTES);
+        }
+    });
+    return plannedMinutes;
+}
+
 function renderSchedule(schedule) {
     refreshSolvingButtons(schedule.solverStatus != null && schedule.solverStatus !== "NOT_SOLVING");
     const scoreElement = $("#score");
@@ -166,14 +196,7 @@ function renderSchedule(schedule) {
     byEmployeeItemDataSet.clear();
 
     // Total planned minutes per teacher, shown as a tooltip on their name.
-    const plannedMinutesByEmployee = {};
-    schedule.shifts.forEach(shift => {
-        if (shift.employee != null) {
-            plannedMinutesByEmployee[shift.employee.name] = (plannedMinutesByEmployee[shift.employee.name] || 0)
-                + JSJoda.LocalDateTime.parse(shift.start)
-                    .until(JSJoda.LocalDateTime.parse(shift.end), JSJoda.ChronoUnit.MINUTES);
-        }
-    });
+    const plannedMinutesByEmployee = plannedMinutesPerEmployee(schedule, null);
 
     schedule.employees.forEach((employee, index) => {
         const employeeGroupElement = $('<div class="card-body p-2"/>')
@@ -348,7 +371,7 @@ function volunteerChip() {
  * assigned teacher by hand, plus a lock. Locking a shift pins it: the solver keeps
  * its teacher as is (or keeps it unassigned) and only plans the other shifts.
  */
-function assignmentPicker(schedule, shift) {
+function assignmentPicker(schedule, shift, plannedMinutes) {
     const wrapper = $("<span class=\"roster-assignment\"/>");
     const select = $("<select class=\"roster-select\"/>")
         .append($("<option value=\"\">Niet toegewezen</option>"));
@@ -375,14 +398,18 @@ function assignmentPicker(schedule, shift) {
                 select.css("border", "2px solid " + UNDESIRED_COLOR);
             }
         }
+        // Hovering over the chip shows the total minutes the teacher is planned in
+        // this week, next to the classroom the chip belongs to.
+        let title = `Ingepland deze week: ${(plannedMinutes || {})[shift.employee.name] || 0} min`;
         if (shift.employee.classroom != null) {
             // The teacher covers another classroom here via an alternative class toggle.
             const coveringAlternative = (shift.classrooms || []).length > 0
                 && !shift.classrooms.includes(shift.employee.classroom);
-            select.attr("title", coveringAlternative
+            title = (coveringAlternative
                 ? "Klas " + shift.employee.classroom + " – dekt hier een andere klas"
-                : "Klas " + shift.employee.classroom);
+                : "Klas " + shift.employee.classroom) + "\n" + title;
         }
+        select.attr("title", title);
     }
     // A pinned (locked) shift keeps its teacher: the dropdown can not change it.
     select.prop("disabled", shift.pinned);
@@ -559,6 +586,8 @@ function renderRoster(schedule) {
         for (let i = 0; i < 5; i++) {
             weekDates.push(monday.plusDays(i));
         }
+        // Total planned minutes per teacher in this week, shown as a tooltip on their chips.
+        const plannedMinutes = plannedMinutesPerEmployee(schedule, weekDates);
 
         const card = $("<div class=\"card roster-week mb-4 shadow-sm\"/>");
         card.append($("<div class=\"card-header fw-bold\"/>")
@@ -604,7 +633,7 @@ function renderRoster(schedule) {
                             td.append(volunteerChip());
                             return;
                         }
-                        td.append(assignmentPicker(schedule, shift));
+                        td.append(assignmentPicker(schedule, shift, plannedMinutes));
                     });
                 if (td.children().length === 0) {
                     // This shift does not occur on this day (excluded weekday).
@@ -1196,6 +1225,67 @@ function exportConfig() {
     link.download = "pauzetoezicht-config.json";
     link.click();
     URL.revokeObjectURL(link.href);
+}
+
+/**
+ * Exports the roster itself (not the config): the teachers, the shifts with their
+ * assigned teacher, pinned state and the score, so a planned roster can be saved
+ * and loaded again later.
+ */
+function exportRoster() {
+    if (loadedSchedule == null) {
+        return;
+    }
+    const blob = new Blob([JSON.stringify(loadedSchedule, null, 2)], {type: "application/json"});
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = "pauzetoezicht-rooster.json";
+    link.click();
+    URL.revokeObjectURL(link.href);
+}
+
+function isValidRoster(roster) {
+    return roster != null
+        && Array.isArray(roster.employees)
+        && roster.employees.every(employee => employee != null && typeof employee.name === "string")
+        && Array.isArray(roster.shifts)
+        && roster.shifts.every(shift => shift != null
+            && typeof shift.location === "string"
+            && typeof shift.start === "string" && typeof shift.end === "string");
+}
+
+function uploadRosterFile(file) {
+    if (file == null) {
+        return;
+    }
+    const reader = new FileReader();
+    reader.onload = function () {
+        let roster;
+        try {
+            roster = JSON.parse(reader.result);
+        } catch (e) {
+            showWarning("Kon het bestand niet lezen.", "Dit is geen geldig JSON-bestand: " + e.message);
+            return;
+        }
+        if (!isValidRoster(roster)) {
+            showWarning("Ongeldig roosterbestand.",
+                "Het bestand moet \"employees\" (naam) en \"shifts\" (locatie, start, einde) bevatten.");
+            return;
+        }
+        // The skills and date arrays are required to render the roster; default them when missing.
+        roster.employees.forEach(employee => {
+            employee.skills = employee.skills || [];
+            employee.unavailableDates = employee.unavailableDates || [];
+            employee.undesiredDates = employee.undesiredDates || [];
+            employee.desiredDates = employee.desiredDates || [];
+        });
+        // An imported roster is not a running solver job.
+        scheduleId = null;
+        roster.solverStatus = "NOT_SOLVING";
+        loadedSchedule = roster;
+        renderSchedule(roster);
+    };
+    reader.readAsText(file);
 }
 
 function applyScheduleConfig(config) {
