@@ -20,3 +20,5 @@ bin
 
 # Local demo config for the employee-scheduling quickstart (school-specific data, keep out of git)
 use-cases/employee-scheduling/src/main/resources/META-INF/resources/demo-config.json
+use-cases/employee-scheduling/src/main/resources/META-INF/resources/lo-config.json
+use-cases/employee-scheduling/src/main/resources/META-INF/resources/pauzetoezicht-config.json

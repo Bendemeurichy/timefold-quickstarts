@@ -6,6 +6,7 @@ import ai.timefold.solver.core.api.domain.solution.PlanningEntityCollectionPrope
 import ai.timefold.solver.core.api.domain.solution.PlanningScore;
 import ai.timefold.solver.core.api.domain.solution.PlanningSolution;
 import ai.timefold.solver.core.api.domain.solution.ProblemFactCollectionProperty;
+import ai.timefold.solver.core.api.domain.solution.ProblemFactProperty;
 import ai.timefold.solver.core.api.domain.valuerange.ValueRangeProvider;
 import ai.timefold.solver.core.api.score.HardSoftBigDecimalScore;
 import ai.timefold.solver.core.api.solver.SolverStatus;
@@ -19,6 +20,14 @@ public class EmployeeSchedule {
 
     @PlanningEntityCollectionProperty
     private List<Shift> shifts;
+
+    /**
+     * PE mode: a single PE teacher guides one class at a time, so shifts assigned to
+     * different classes may never overlap. Off for break duty, where many teachers
+     * work simultaneously. Boxed and never null, so it can be used in constraint streams.
+     */
+    @ProblemFactProperty
+    private Boolean peMode = false;
 
     @PlanningScore
     private HardSoftBigDecimalScore score;
@@ -52,6 +61,14 @@ public class EmployeeSchedule {
 
     public void setShifts(List<Shift> shifts) {
         this.shifts = shifts;
+    }
+
+    public Boolean getPeMode() {
+        return peMode;
+    }
+
+    public void setPeMode(Boolean peMode) {
+        this.peMode = Boolean.TRUE.equals(peMode);
     }
 
     public HardSoftBigDecimalScore getScore() {

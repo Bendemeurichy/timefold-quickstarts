@@ -30,6 +30,7 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
                 unavailableEmployee(constraintFactory),
                 unavailableEmployeePartOfDay(constraintFactory),
                 maxWorkingMinutes(constraintFactory),
+                oneClassAtATime(constraintFactory),
 
                 // Soft constraints
                 undesiredDayForEmployee(constraintFactory),
@@ -107,6 +108,21 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
                                 .anyMatch(period -> overlapsPeriod(shift, period)))
                 .penalize(HardSoftBigDecimalScore.ONE_HARD)
                 .asConstraint("Unavailable employee (part of day)");
+    }
+
+    Constraint oneClassAtATime(ConstraintFactory constraintFactory) {
+        // PE mode: one PE teacher guides one class at a time, so two different classes
+        // may never be planned in overlapping shifts (like a teacher conflict in school
+        // timetabling). In break duty mode many teachers work simultaneously, so this
+        // constraint only applies when the schedule's peMode problem fact is on.
+        return constraintFactory.forEachUniquePair(Shift.class, overlapping(Shift::getStart, Shift::getEnd))
+                .filter((shift1, shift2) -> shift1.getEmployee() != null
+                        && shift2.getEmployee() != null
+                        && shift1.getEmployee() != shift2.getEmployee())
+                .join(Boolean.class)
+                .filter((shift1, shift2, peMode) -> peMode)
+                .penalize(HardSoftBigDecimalScore.ONE_HARD)
+                .asConstraint("One class at a time (PE)");
     }
 
     Constraint maxWorkingMinutes(ConstraintFactory constraintFactory) {

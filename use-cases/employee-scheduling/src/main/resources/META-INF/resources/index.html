@@ -78,6 +78,58 @@
             font-size: 0.8rem;
         }
 
+        /* Timetable: the shifts of a week aligned on a time grid (time rows x weekday
+           columns), like a classic school timetable. It is the printed view. */
+        .timetable-table {
+            table-layout: fixed;
+        }
+        .timetable-table thead th {
+            background-color: #f1f3f5;
+        }
+        .timetable-table td {
+            border: 1px solid #ced4da;
+            padding: 0.1rem;
+            vertical-align: middle;
+            text-align: center;
+        }
+        .tt-time {
+            width: 7rem;
+            font-size: 0.75rem;
+            color: #868e96;
+            background-color: #f8f9fa;
+            white-space: nowrap;
+        }
+        .tt-class {
+            font-weight: 700;
+        }
+        .tt-open {
+            border: 2px dashed #adb5bd !important;
+            background-color: #fff;
+            color: #868e96;
+            font-size: 0.75rem;
+            font-style: italic;
+        }
+        .tt-gap {
+            background: repeating-linear-gradient(45deg, #f8f9fa, #f8f9fa 10px, #e9ecef 10px, #e9ecef 20px);
+            color: #868e96;
+            font-style: italic;
+        }
+        /* Break duty mode: one small chip per active duty in a timetable cell */
+        .tt-duty {
+            border-radius: 0.4rem;
+            padding: 0.05rem 0.4rem;
+            margin: 0.05rem;
+            font-size: 0.75rem;
+            box-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+        }
+        .tt-duty .tt-detail {
+            color: #343a40;
+        }
+        .tt-duty.tt-unassigned {
+            background-color: #f4b6b6;
+            border: 2px dashed #ef2929;
+        }
+
         /* Printable roster: hide everything except the week roster when printing */
         @media print {
             header, #actions, blockquote, #notificationPanel {
@@ -86,7 +138,11 @@
             .tab-content > .tab-pane {
                 display: none !important;
             }
+            /* The time-aligned timetable is printed instead of the per-shift roster */
             #rosterPanel {
+                display: none !important;
+            }
+            #timetablePanel {
                 display: block !important;
             }
             .roster-week {
@@ -94,7 +150,7 @@
                 box-shadow: none !important;
             }
             .roster-chip, .roster-no-lunch, .roster-table thead th, .roster-location-cell,
-            .roster-select {
+            .roster-select, .timetable-table td, .timetable-table thead th, .tt-time, .tt-gap {
                 -webkit-print-color-adjust: exact;
                 print-color-adjust: exact;
             }
@@ -164,6 +220,14 @@
             <span class="fas fa-print"></span> Rooster afdrukken
         </button>
 
+        <div class="form-check form-switch d-inline-block align-middle ms-3 mb-0">
+            <input class="form-check-input" type="checkbox" id="peModeToggle">
+            <label class="form-check-label" for="peModeToggle"
+                   title="LO-planning: één leerkracht LO geeft één klas tegelijk, dus diensten van verschillende klassen mogen elkaar nooit overlappen. Uit voor pauzetoezicht, waar veel leerkrachten tegelijk werken.">
+                LO-modus
+            </label>
+        </div>
+
         <div class="float-end">
             <ul class="nav nav-pills" role="tablist">
                 <li class="nav-item" role="presentation">
@@ -186,6 +250,7 @@
              aria-labelledby="rosterTab"></div>
         <div class="tab-pane fade" id="byEmployeePanel" role="tabpanel" aria-labelledby="byEmployeeTab"></div>
     </div>
+    <div id="timetablePanel" class="mb-4"></div>
 </main>
 
 <div class="modal fade" id="editDataModal" tabindex="-1" aria-labelledby="editDataModalLabel" aria-hidden="true">

@@ -371,6 +371,48 @@ class EmployeeSchedulingConstraintProviderTest {
     }
 
     @Test
+    void oneClassAtATime() {
+        // In PE mode the employees are the classes, guided by one PE teacher.
+        Employee class1A = new Employee("1A", Set.of("Teacher"), "1A", null, null, null);
+        Employee class1B = new Employee("1B", Set.of("Teacher"), "1B", null, null, null);
+
+        // PE mode on: two different classes in overlapping shifts are penalized.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::oneClassAtATime)
+                .given(true, class1A, class1B,
+                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "LO", "Teacher", class1A),
+                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "LO", "Teacher", class1B))
+                .penalizes(1);
+
+        // PE mode off: the same overlap is allowed (break duty has many teachers).
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::oneClassAtATime)
+                .given(false, class1A, class1B,
+                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "LO", "Teacher", class1A),
+                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "LO", "Teacher", class1B))
+                .penalizes(0);
+
+        // Shifts directly after one another (end == start) do not overlap.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::oneClassAtATime)
+                .given(true, class1A, class1B,
+                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "LO", "Teacher", class1A),
+                        new Shift("2", DAY_END_TIME, DAY_END_TIME.plusHours(1), "LO", "Teacher", class1B))
+                .penalizes(0);
+
+        // Two overlapping shifts of the same class are handled by noOverlappingShifts, not here.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::oneClassAtATime)
+                .given(true, class1A,
+                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "LO", "Teacher", class1A),
+                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "LO", "Teacher", class1A))
+                .penalizes(0);
+
+        // Unassigned shifts never clash.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::oneClassAtATime)
+                .given(true, class1A,
+                        new Shift("1", DAY_START_TIME, DAY_END_TIME, "LO", "Teacher", class1A),
+                        new Shift("2", DAY_START_TIME, DAY_END_TIME, "LO", "Teacher", null))
+                .penalizes(0);
+    }
+
+    @Test
     void maxWorkingMinutes() {
         // Amy's contract caps her at 60 minutes per week; Beth has no cap.
         Employee cappedEmployee = new Employee("Amy", null, null, null, null);

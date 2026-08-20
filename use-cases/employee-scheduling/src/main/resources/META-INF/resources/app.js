@@ -60,6 +60,20 @@ $(document).ready(function () {
     $("#generateDataButton").click(function () {
         generateDataFromEditor();
     });
+    $("#peModeToggle").change(function () {
+        const peMode = $(this).is(":checked");
+        if (scheduleConfig != null) {
+            scheduleConfig.peMode = peMode;
+            try {
+                localStorage.setItem("lunchDutyConfig", JSON.stringify(scheduleConfig));
+            } catch (e) {
+                console.warn("Could not store config.", e);
+            }
+        }
+        if (loadedSchedule != null) {
+            loadedSchedule.peMode = peMode;
+        }
+    });
     // HACK to allow vis-timeline to work within Bootstrap tabs
     $("#byEmployeeTab").on('shown.bs.tab', function (event) {
         byEmployeeTimeline.redraw();
@@ -69,6 +83,7 @@ $(document).ready(function () {
     loadInitialScheduleConfig(function (config) {
         scheduleConfig = config;
         loadedSchedule = generateScheduleFromConfig(scheduleConfig);
+        $("#peModeToggle").prop("checked", config.peMode === true);
         renderSchedule(loadedSchedule);
     });
 });
@@ -179,6 +194,7 @@ function plannedMinutesPerEmployee(schedule, dates) {
 
 function renderSchedule(schedule) {
     refreshSolvingButtons(schedule.solverStatus != null && schedule.solverStatus !== "NOT_SOLVING");
+    $("#peModeToggle").prop("checked", schedule.peMode === true);
     const scoreElement = $("#score");
     scoreElement.text("Score: " + (schedule.score == null ? "?" : schedule.score));
     scoreElement.removeClass("text-danger text-success");
@@ -191,6 +207,7 @@ function renderSchedule(schedule) {
     }
 
     renderRoster(schedule);
+    renderTimetable(schedule);
 
     byEmployeeGroupDataSet.clear();
     byEmployeeItemDataSet.clear();
@@ -650,6 +667,190 @@ function renderRoster(schedule) {
     });
 }
 
+/**
+ * One duty chip for the break duty timetable: the assigned teacher (or "Niet
+ * toegewezen"), the location and the supervised classrooms, colored like the roster chips.
+ */
+function timetableChip(shift) {
+    const chip = $("<div class=\"tt-duty\"/>");
+    if (shift.volunteersOnly) {
+        return chip.addClass("tt-open").text("Vrijwilligers · " + shift.location);
+    }
+    if (shift.employee == null) {
+        chip.addClass("tt-unassigned")
+            .append($("<span class=\"fw-bold\"/>").text("Niet toegewezen"));
+    } else {
+        chip.css("background-color", comboColor(shift.classrooms))
+            .append($("<span class=\"fw-bold\"/>").text(shift.employee.name));
+    }
+    return chip.append($("<span class=\"tt-detail\"/>")
+        .text(" · " + shift.location + " · " + classroomLabel(shift.classrooms)));
+}
+
+/**
+ * Timetable: all shifts of the week aligned on a time grid (time rows x weekday columns),
+ * so the whole schedule reads like a classic school timetable instead of a per-shift
+ * list. Shown on screen under the roster and used as the printed view (see the print CSS).
+ * Every shift is printed exactly once, as one block that starts at its start row and
+ * spans the rows it covers (a rowspan); staggered shift times never cause a duty's chip
+ * to be repeated in every small row it crosses. A day column is split into lanes
+ * (sub-columns) so that blocks overlapping in time sit side by side.
+ * In PE mode a day has one lane: assigned slots never overlap there (a hard constraint);
+ * unassigned slots fill the gaps where they overlap nothing placed yet and show as open
+ * (dashed) cells. In break duty mode many teachers work at the same time: identical
+ * shifts (several teachers on the same duty) group into one block with one chip per
+ * teacher, and overlapping duties get their own lane.
+ */
+function renderTimetable(schedule) {
+    const panel = $("#timetablePanel");
+    panel.children().remove();
+    if (schedule.shifts.length === 0) {
+        return;
+    }
+    const toMinutes = time => parseInt(time.substring(0, 2)) * 60 + parseInt(time.substring(3, 5));
+    // Rows are sized proportionally to their length, except intervals without any shift
+    // (never occupied, for example the lunch break): those get a small fixed height.
+    const timeCell = (rowStart, rowEnd, small) =>
+        $(`<td class="tt-time" style="height:${small ? 20 : Math.max(16, Math.round((toMinutes(rowEnd) - toMinutes(rowStart)) * 1.6))}px"/>`)
+            .text(`${rowStart} – ${rowEnd}`);
+    const gapCell = (rowStart, rowEnd, colspan) => $(`<td colspan="${colspan}" class="tt-gap"/>`)
+        .text(rowStart >= "12:05" && rowEnd <= "13:30" ? "Middagpauze" : "–");
+
+    // Group the schedule into weeks, Monday to Friday (same as the roster).
+    const shiftDays = [...new Set(schedule.shifts
+        .map(shift => JSJoda.LocalDateTime.parse(shift.start).toLocalDate().toString()))].sort();
+    const weekMondays = [...new Set(shiftDays.map(day => JSJoda.LocalDate.parse(day)
+        .with(JSJoda.TemporalAdjusters.previousOrSame(JSJoda.DayOfWeek.MONDAY)).toString()))].sort();
+
+    weekMondays.forEach(mondayString => {
+        const monday = JSJoda.LocalDate.parse(mondayString);
+        const weekDates = [];
+        for (let i = 0; i < 5; i++) {
+            weekDates.push(monday.plusDays(i));
+        }
+        const dayIndex = new Map(weekDates.map((date, i) => [date.toString(), i]));
+        const weekShifts = schedule.shifts.filter(shift => dayIndex.has(shift.start.substring(0, 10)));
+        if (weekShifts.length === 0) {
+            return;
+        }
+
+        // One row boundary per shift boundary, so every block lines up with the time grid.
+        const boundaries = [...new Set(weekShifts.flatMap(shift =>
+            [shift.start.substring(11, 16), shift.end.substring(11, 16)]))].sort();
+
+        // Lay out the week in blocks per day per lane. A block = {start, end, shifts, open}:
+        // one or more identical shifts rendered as a single rowspan cell.
+        const peMode = schedule.peMode === true;
+        const lanesPerDay = weekDates.map(() => []);
+        if (peMode) {
+            // PE mode: one lane per day. Assigned blocks first (never overlap); open slots
+            // then fill gaps where they overlap nothing placed yet (overlapping
+            // alternatives are not shown).
+            const placeBlock = (shift, open) => {
+                const start = shift.start.substring(11, 16);
+                const end = shift.end.substring(11, 16);
+                const lanes = lanesPerDay[dayIndex.get(shift.start.substring(0, 10))];
+                if (lanes.length === 0) {
+                    lanes.push([]);
+                }
+                if (lanes[0].some(block => block.start < end && block.end > start)) {
+                    return;
+                }
+                lanes[0].push({start: start, end: end, shifts: [shift], open: open});
+            };
+            weekShifts.filter(shift => shift.employee != null).forEach(shift => placeBlock(shift, false));
+            weekShifts.filter(shift => shift.employee == null)
+                .sort((a, b) => a.start.localeCompare(b.start))
+                .forEach(shift => placeBlock(shift, true));
+        } else {
+            // Break duty mode: identical shifts (several teachers on the same duty) group
+            // into one block with one chip per teacher; each block goes to the first lane
+            // where it overlaps nothing yet, so overlapping duties sit side by side.
+            weekDates.forEach((date, day) => {
+                const groups = new Map();
+                weekShifts
+                    .filter(shift => shift.start.substring(0, 10) === date.toString())
+                    .sort((a, b) => a.start.localeCompare(b.start) || a.location.localeCompare(b.location))
+                    .forEach(shift => {
+                        const key = [shift.start, shift.end, shift.location,
+                            (shift.classrooms || []).join(",")].join("|");
+                        if (!groups.has(key)) {
+                            groups.set(key, []);
+                        }
+                        groups.get(key).push(shift);
+                    });
+                const lanes = lanesPerDay[day];
+                groups.forEach(shifts => {
+                    const start = shifts[0].start.substring(11, 16);
+                    const end = shifts[0].end.substring(11, 16);
+                    let lane = lanes.findIndex(blocks =>
+                        blocks.every(block => block.end <= start || block.start >= end));
+                    if (lane < 0) {
+                        lane = lanes.length;
+                        lanes.push([]);
+                    }
+                    lanes[lane].push({start: start, end: end, shifts: shifts, open: false});
+                });
+            });
+        }
+        // A day without blocks keeps one empty lane, so its column stays visible.
+        const laneCounts = lanesPerDay.map(lanes => peMode ? 1 : Math.max(1, lanes.length));
+        const dayColumnCount = laneCounts.reduce((total, count) => total + count, 0);
+
+        const card = $("<div class=\"card roster-week mb-4 shadow-sm\"/>");
+        card.append($("<div class=\"card-header fw-bold\"/>")
+            .text(`Week van ${formatRosterDate(monday)} – ${formatRosterDate(monday.plusDays(4))}`));
+
+        const table = $("<table class=\"table table-bordered timetable-table mb-0\"/>");
+        table.append($("<thead/>").append($("<tr/>")
+            .append($("<th class=\"tt-time\"/>").text("Tijd"))
+            .append(weekDates.map((date, i) => $(`<th class="text-center" colspan="${laneCounts[i]}"/>`)
+                .html(`${ROSTER_DAY_NAMES[date.dayOfWeek().value() - 1]}<br>`
+                    + `<small class="text-muted">${formatRosterDate(date)}</small>`)))));
+
+        const tbody = $("<tbody/>");
+        for (let row = 0; row < boundaries.length - 1; row++) {
+            const rowStart = boundaries[row];
+            const rowEnd = boundaries[row + 1];
+            const tr = $("<tr/>");
+            const anyBlock = lanesPerDay.some(lanes =>
+                lanes.some(blocks => blocks.some(block => block.start < rowEnd && block.end > rowStart)));
+            tr.append(timeCell(rowStart, rowEnd, !anyBlock));
+            if (!anyBlock) {
+                tr.append(gapCell(rowStart, rowEnd, dayColumnCount));
+            } else {
+                lanesPerDay.forEach((lanes, day) => {
+                    for (let lane = 0; lane < laneCounts[day]; lane++) {
+                        const blocks = lanes[lane] || [];
+                        const block = blocks.find(b => b.start === rowStart);
+                        if (block != null) {
+                            const td = $(`<td rowspan="${boundaries.indexOf(block.end) - row}"/>`);
+                            if (block.open) {
+                                td.addClass("tt-open").text("vrij · " + classroomLabel(block.shifts[0].classrooms));
+                            } else if (peMode) {
+                                td.css("background-color",
+                                    comboColor([block.shifts[0].employee.classroom || block.shifts[0].employee.name]))
+                                    .append($("<div class=\"tt-class\"/>").text(block.shifts[0].employee.name));
+                            } else {
+                                block.shifts.forEach(shift => td.append(timetableChip(shift)));
+                            }
+                            tr.append(td);
+                        } else if (!blocks.some(b => b.start < rowStart && b.end > rowStart)) {
+                            // No block covering this lane on this row: an empty, writable cell.
+                            tr.append($("<td/>"));
+                        }
+                        // Otherwise the cell is covered by a rowspan from an earlier row.
+                    }
+                });
+            }
+            tbody.append(tr);
+        }
+        table.append(tbody);
+        card.append(table);
+        panel.append(card);
+    });
+}
+
 // ---------- Editable break duty data ----------
 
 const DAY_CHECKBOXES = [
@@ -703,6 +904,8 @@ function defaultScheduleConfig() {
         "Gus Poe", "Hugo Rye", "Ivy Smith", "Jay Watt", "Amy Fox", "Beth Green"];
     return {
         weeks: 2,
+        // PE mode is for the PE teacher planning classes; this default config is break duty.
+        peMode: false,
         // One shift per school day per entry: location, hour, the classrooms it supervises
         // and the weekdays on which the shift does not occur (excludedDays).
         // Wednesday afternoon is off: only the morning break still happens on Wednesday.
@@ -1044,6 +1247,13 @@ function renderDataEditor() {
         .append($("<label class=\"form-label\"/>").text("Weken"))
         .append($("<input id=\"cfgWeeks\" type=\"number\" min=\"1\" max=\"8\" class=\"form-control\" style=\"max-width: 6rem\"/>")
             .val(config.weeks)));
+    settingsRow.append($("<div class=\"form-check form-switch\"/>")
+        .append($("<input id=\"cfgPeMode\" type=\"checkbox\" class=\"form-check-input\"/>")
+            .prop("checked", config.peMode === true))
+        .append($("<label class=\"form-check-label\" for=\"cfgPeMode\"/>").text("LO-modus"))
+        .attr("title", "LO-planning: één leerkracht LO geeft één klas tegelijk, dus diensten "
+            + "van verschillende klassen mogen elkaar nooit overlappen. "
+            + "Uit voor pauzetoezicht, waar veel leerkrachten tegelijk werken."));
     settings.children().first().append($("<h5 class=\"card-title\"/>").text("Planning"), settingsRow);
     body.append(settings);
 
@@ -1121,6 +1331,7 @@ function renderDataEditor() {
 function readDataEditor() {
     const config = {
         weeks: Math.max(1, parseInt($("#cfgWeeks").val()) || 1),
+        peMode: $("#cfgPeMode").is(":checked"),
         shifts: [],
         teachers: []
     };
@@ -1516,7 +1727,7 @@ function generateScheduleFromConfig(config) {
             : (ratioSum > 0 ? roundUpTo5(weeklyShiftMinutes * ratio / ratioSum) : null);
     });
 
-    return {employees: employees, shifts: shifts, score: null, solverStatus: null};
+    return {employees: employees, shifts: shifts, peMode: config.peMode === true, score: null, solverStatus: null};
 }
 
 function solve() {
