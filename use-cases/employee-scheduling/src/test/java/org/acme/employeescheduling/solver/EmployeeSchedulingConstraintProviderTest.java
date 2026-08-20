@@ -466,6 +466,100 @@ class EmployeeSchedulingConstraintProviderTest {
     }
 
     @Test
+    void maxLunchDutiesPerWeek() {
+        // Contracts: Amy full-time (2 lunch duties per week), Beth part-time (1), Carl 4/5 (1).
+        Employee fullTime = new Employee("Amy", null, null, null, null);
+        fullTime.setWorkRatio(1.0);
+        Employee partTime = new Employee("Beth", null, null, null, null);
+        partTime.setWorkRatio(0.5);
+        Employee fourFifths = new Employee("Carl", null, null, null, null);
+        fourFifths.setWorkRatio(0.8);
+        // Dan has a custom contract with explicit max minutes: the lunch limit does not apply to him.
+        Employee custom = new Employee("Dan", null, null, null, null);
+        custom.setMaxWorkingMinutes(180);
+
+        // DAY_1 (2021-02-01) is a Monday; the lunch window is 12:00-13:30.
+        LocalDate tuesday = DAY_1.plusDays(1);
+        LocalDate wednesday = DAY_1.plusDays(2);
+        LocalDate nextWeek = DAY_1.plusWeeks(1);
+
+        // 3 lunch duties in a week exceeds the full-time limit of 2 by 1.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxLunchDutiesPerWeek)
+                .given(fullTime,
+                        new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", fullTime),
+                        new Shift("2", tuesday.atTime(12, 0), tuesday.atTime(13, 0), "Refter", "Teacher", fullTime),
+                        new Shift("3", wednesday.atTime(12, 0), wednesday.atTime(13, 0), "Refter", "Teacher", fullTime))
+                .penalizesBy(1);
+
+        // 2 lunch duties in a week stays within the full-time limit.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxLunchDutiesPerWeek)
+                .given(fullTime,
+                        new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", fullTime),
+                        new Shift("2", tuesday.atTime(12, 0), tuesday.atTime(13, 0), "Refter", "Teacher", fullTime))
+                .penalizes(0);
+
+        // A part-time teacher may only do 1 lunch duty per week.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxLunchDutiesPerWeek)
+                .given(partTime,
+                        new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", partTime),
+                        new Shift("2", tuesday.atTime(12, 0), tuesday.atTime(13, 0), "Refter", "Teacher", partTime))
+                .penalizesBy(1);
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxLunchDutiesPerWeek)
+                .given(partTime,
+                        new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", partTime))
+                .penalizes(0);
+
+        // A 4/5 teacher may also only do 1 lunch duty per week.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxLunchDutiesPerWeek)
+                .given(fourFifths,
+                        new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", fourFifths),
+                        new Shift("2", tuesday.atTime(12, 0), tuesday.atTime(13, 0), "Refter", "Teacher", fourFifths))
+                .penalizesBy(1);
+
+        // Every week has its own limit: 2 lunch duties in each of two weeks is fine for a full-time teacher.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxLunchDutiesPerWeek)
+                .given(fullTime,
+                        new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", fullTime),
+                        new Shift("2", tuesday.atTime(12, 0), tuesday.atTime(13, 0), "Refter", "Teacher", fullTime),
+                        new Shift("3", nextWeek.atTime(12, 0), nextWeek.atTime(13, 0), "Refter", "Teacher", fullTime),
+                        new Shift("4", nextWeek.plusDays(1).atTime(12, 0), nextWeek.plusDays(1).atTime(13, 0),
+                                "Refter", "Teacher", fullTime))
+                .penalizes(0);
+
+        // A shift partially overlapping the lunch window counts as a lunch duty.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxLunchDutiesPerWeek)
+                .given(partTime,
+                        new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", partTime),
+                        new Shift("2", tuesday.atTime(13, 0), tuesday.atTime(14, 0), "Refter", "Teacher", partTime))
+                .penalizesBy(1);
+
+        // Shifts outside the lunch window do not count, not even for a part-time teacher:
+        // a shift ending at 12:00 or starting at 13:30 does not overlap the window.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxLunchDutiesPerWeek)
+                .given(partTime,
+                        new Shift("1", DAY_1.atTime(10, 0), DAY_1.atTime(10, 30), "Speelplaats", "Teacher", partTime),
+                        new Shift("2", DAY_1.atTime(11, 30), DAY_1.atTime(12, 0), "Speelplaats", "Teacher", partTime),
+                        new Shift("3", tuesday.atTime(13, 30), tuesday.atTime(14, 0), "Speelplaats", "Teacher",
+                                partTime),
+                        new Shift("4", wednesday.atTime(14, 45), wednesday.atTime(15, 15), "Speelplaats", "Teacher",
+                                partTime))
+                .penalizes(0);
+
+        // A teacher with a custom contract has no lunch duty limit.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxLunchDutiesPerWeek)
+                .given(custom,
+                        new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", custom),
+                        new Shift("2", tuesday.atTime(12, 0), tuesday.atTime(13, 0), "Refter", "Teacher", custom),
+                        new Shift("3", wednesday.atTime(12, 0), wednesday.atTime(13, 0), "Refter", "Teacher", custom))
+                .penalizes(0);
+
+        // An unassigned shift does not count towards anyone's lunch duty limit.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::maxLunchDutiesPerWeek)
+                .given(new Shift("1", DAY_1.atTime(12, 0), DAY_1.atTime(13, 0), "Refter", "Teacher", null))
+                .penalizes(0);
+    }
+
+    @Test
     void maxTwoDutiesPerDay() {
         Employee employee = new Employee("Amy", null, null, null, null);
         LocalDateTime shift1Start = DAY_1.atTime(10, 0);

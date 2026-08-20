@@ -4,6 +4,7 @@ import static ai.timefold.solver.core.api.score.stream.Joiners.equal;
 import static ai.timefold.solver.core.api.score.stream.Joiners.overlapping;
 
 import java.time.DayOfWeek;
+import java.time.LocalTime;
 import java.util.Objects;
 
 import ai.timefold.solver.core.api.score.HardSoftBigDecimalScore;
@@ -19,6 +20,10 @@ import org.acme.employeescheduling.domain.Shift;
 
 public class EmployeeSchedulingConstraintProvider implements ConstraintProvider {
 
+    // The lunch window: shifts overlapping 12:00-13:30 count as lunch duties.
+    private static final LocalTime LUNCH_WINDOW_START = LocalTime.of(12, 0);
+    private static final LocalTime LUNCH_WINDOW_END = LocalTime.of(13, 30);
+
     @Override
     public Constraint[] defineConstraints(ConstraintFactory constraintFactory) {
         return new Constraint[] {
@@ -30,6 +35,7 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
                 unavailableEmployee(constraintFactory),
                 unavailableEmployeePartOfDay(constraintFactory),
                 maxWorkingMinutes(constraintFactory),
+                maxLunchDutiesPerWeek(constraintFactory),
                 oneClassAtATime(constraintFactory),
 
                 // Soft constraints
@@ -138,6 +144,34 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
                 .penalize(HardSoftBigDecimalScore.ONE_HARD,
                         (employee, weekStart, totalMinutes) -> totalMinutes - employee.getMaxWorkingMinutes())
                 .asConstraint("Max working minutes per week");
+    }
+
+    Constraint maxLunchDutiesPerWeek(ConstraintFactory constraintFactory) {
+        // A teacher's contract caps how often they can be scheduled during the lunch window
+        // (12:00-13:30) per week (Monday to Sunday): full-time teachers at most twice,
+        // part-time and 4/5 teachers at most once. Teachers with a custom contract
+        // (null work ratio, explicit max working minutes) have no lunch duty limit.
+        return constraintFactory.forEach(Shift.class)
+                .filter(shift -> shift.getEmployee() != null
+                        && shift.getEmployee().getWorkRatio() != null
+                        && overlapsLunchWindow(shift))
+                .groupBy(Shift::getEmployee,
+                        shift -> shift.getStart().toLocalDate().with(DayOfWeek.MONDAY),
+                        ConstraintCollectors.count())
+                .filter((employee, weekStart, lunchDutyCount) -> lunchDutyCount > maxLunchDutiesPerWeek(employee))
+                .penalize(HardSoftBigDecimalScore.ONE_HARD,
+                        (employee, weekStart, lunchDutyCount) -> lunchDutyCount - maxLunchDutiesPerWeek(employee))
+                .asConstraint("Max lunch duties per week");
+    }
+
+    private static boolean overlapsLunchWindow(Shift shift) {
+        return shift.getStart().toLocalTime().isBefore(LUNCH_WINDOW_END)
+                && shift.getEnd().toLocalTime().isAfter(LUNCH_WINDOW_START);
+    }
+
+    private static int maxLunchDutiesPerWeek(Employee employee) {
+        // Full-time teachers may do lunch duty twice a week; part-time and 4/5 contracts only once.
+        return employee.getWorkRatio() >= 1.0 ? 2 : 1;
     }
 
     Constraint undesiredDayForEmployee(ConstraintFactory constraintFactory) {
