@@ -6,6 +6,10 @@ const UNAVAILABLE_COLOR = '#ef2929' // Tango Scarlet Red
 const UNDESIRED_COLOR = '#f57900' // Tango Orange
 const DESIRED_COLOR = '#73d216' // Tango Chameleon
 
+// The printable width in CSS pixels of the paper used for printing (see the @page rule
+// in index.html): A4 landscape (297mm) minus the 8mm page margins and the page gutters.
+const PRINTABLE_PAGE_WIDTH_PX = Math.floor((297 - 2 * 8) * 96 / 25.4) - 24;
+
 let scheduleId = null;
 let loadedSchedule = null;
 
@@ -31,6 +35,25 @@ $(document).ready(function () {
     });
     $("#printButton").click(function () {
         window.print();
+    });
+    // Print the timetable panel exactly as it is visualised on screen: freeze its
+    // current on-screen width, then zoom it so it fills the printable width of one
+    // landscape A4 page (see the @page rule in index.html). Without this the
+    // fixed-layout table is squeezed into the narrower paper width and the duty
+    // chips wrap into unreadable one-character-per-line strips.
+    window.addEventListener("beforeprint", () => {
+        const panel = document.getElementById("timetablePanel");
+        if (panel != null && panel.offsetWidth > 0) {
+            panel.style.width = panel.offsetWidth + "px";
+            panel.style.zoom = Math.min(1.5, PRINTABLE_PAGE_WIDTH_PX / panel.offsetWidth);
+        }
+    });
+    window.addEventListener("afterprint", () => {
+        const panel = document.getElementById("timetablePanel");
+        if (panel != null) {
+            panel.style.width = "";
+            panel.style.zoom = "";
+        }
     });
     $("#editDataButton").click(function () {
         openDataEditor();
@@ -713,8 +736,6 @@ function renderTimetable(schedule) {
     const timeCell = (rowStart, rowEnd, small) =>
         $(`<td class="tt-time" style="height:${small ? 20 : Math.max(16, Math.round((toMinutes(rowEnd) - toMinutes(rowStart)) * 1.6))}px"/>`)
             .text(`${rowStart} – ${rowEnd}`);
-    const gapCell = (rowStart, rowEnd, colspan) => $(`<td colspan="${colspan}" class="tt-gap"/>`)
-        .text(rowStart >= "12:05" && rowEnd <= "13:30" ? "Middagpauze" : "–");
 
     // Group the schedule into weeks, Monday to Friday (same as the roster).
     const shiftDays = [...new Set(schedule.shifts
@@ -742,6 +763,7 @@ function renderTimetable(schedule) {
         // one or more identical shifts rendered as a single rowspan cell.
         const peMode = schedule.peMode === true;
         const lanesPerDay = weekDates.map(() => []);
+        let laneCount = 1;
         if (peMode) {
             // PE mode: one lane per day. Assigned blocks first (never overlap); open slots
             // then fill gaps where they overlap nothing placed yet (overlapping
@@ -764,38 +786,56 @@ function renderTimetable(schedule) {
                 .forEach(shift => placeBlock(shift, true));
         } else {
             // Break duty mode: identical shifts (several teachers on the same duty) group
-            // into one block with one chip per teacher; each block goes to the first lane
-            // where it overlaps nothing yet, so overlapping duties sit side by side.
-            weekDates.forEach((date, day) => {
-                const groups = new Map();
-                weekShifts
-                    .filter(shift => shift.start.substring(0, 10) === date.toString())
-                    .sort((a, b) => a.start.localeCompare(b.start) || a.location.localeCompare(b.location))
-                    .forEach(shift => {
-                        const key = [shift.start, shift.end, shift.location,
-                            (shift.classrooms || []).join(",")].join("|");
-                        if (!groups.has(key)) {
-                            groups.set(key, []);
-                        }
-                        groups.get(key).push(shift);
-                    });
-                const lanes = lanesPerDay[day];
-                groups.forEach(shifts => {
-                    const start = shifts[0].start.substring(11, 16);
-                    const end = shifts[0].end.substring(11, 16);
-                    let lane = lanes.findIndex(blocks =>
-                        blocks.every(block => block.end <= start || block.start >= end));
+            // into one block with one chip per teacher. The lane is assigned per duty
+            // pattern (same hours, location and classrooms), not per day, so the same duty
+            // sits in the same lane on every weekday and the chips line up in clear columns
+            // under each day. Duties that overlap in time get their own lane (first fit).
+            const patterns = new Map(); // pattern key -> {start, end, lane}
+            const groupsPerDay = weekDates.map(() => new Map()); // pattern key -> shifts
+            weekShifts
+                .sort((a, b) => a.start.localeCompare(b.start) || a.location.localeCompare(b.location))
+                .forEach(shift => {
+                    const start = shift.start.substring(11, 16);
+                    const end = shift.end.substring(11, 16);
+                    const key = [start, end, shift.location, (shift.classrooms || []).join(",")].join("|");
+                    if (!patterns.has(key)) {
+                        patterns.set(key, {start: start, end: end, lane: -1});
+                    }
+                    const groups = groupsPerDay[dayIndex.get(shift.start.substring(0, 10))];
+                    if (!groups.has(key)) {
+                        groups.set(key, []);
+                    }
+                    groups.get(key).push(shift);
+                });
+            const lanePatterns = []; // lane -> the patterns already placed in that lane
+            [...patterns.values()]
+                .sort((a, b) => a.start.localeCompare(b.start) || a.end.localeCompare(b.end))
+                .forEach(pattern => {
+                    let lane = lanePatterns.findIndex(placed =>
+                        placed.every(other => other.end <= pattern.start || other.start >= pattern.end));
                     if (lane < 0) {
-                        lane = lanes.length;
+                        lane = lanePatterns.length;
+                        lanePatterns.push([]);
+                    }
+                    lanePatterns[lane].push(pattern);
+                    pattern.lane = lane;
+                });
+            laneCount = Math.max(1, lanePatterns.length);
+            groupsPerDay.forEach((groups, day) => {
+                groups.forEach((shifts, key) => {
+                    const pattern = patterns.get(key);
+                    const lanes = lanesPerDay[day];
+                    while (lanes.length <= pattern.lane) {
                         lanes.push([]);
                     }
-                    lanes[lane].push({start: start, end: end, shifts: shifts, open: false});
+                    lanes[pattern.lane].push(
+                        {start: pattern.start, end: pattern.end, shifts: shifts, open: false});
                 });
             });
         }
-        // A day without blocks keeps one empty lane, so its column stays visible.
-        const laneCounts = lanesPerDay.map(lanes => peMode ? 1 : Math.max(1, lanes.length));
-        const dayColumnCount = laneCounts.reduce((total, count) => total + count, 0);
+        // In break duty mode every day shows all lanes of the week, even when some stay
+        // empty on a day: the chips of a duty line up in the same sub-column every weekday.
+        const laneCounts = weekDates.map(() => peMode ? 1 : laneCount);
 
         const card = $("<div class=\"card roster-week mb-4 shadow-sm\"/>");
         card.append($("<div class=\"card-header fw-bold\"/>")
@@ -804,7 +844,7 @@ function renderTimetable(schedule) {
         const table = $("<table class=\"table table-bordered timetable-table mb-0\"/>");
         table.append($("<thead/>").append($("<tr/>")
             .append($("<th class=\"tt-time\"/>").text("Tijd"))
-            .append(weekDates.map((date, i) => $(`<th class="text-center" colspan="${laneCounts[i]}"/>`)
+            .append(weekDates.map((date, i) => $(`<th class="text-center tt-day-start" colspan="${laneCounts[i]}"/>`)
                 .html(`${ROSTER_DAY_NAMES[date.dayOfWeek().value() - 1]}<br>`
                     + `<small class="text-muted">${formatRosterDate(date)}</small>`)))));
 
@@ -817,7 +857,11 @@ function renderTimetable(schedule) {
                 lanes.some(blocks => blocks.some(block => block.start < rowEnd && block.end > rowStart)));
             tr.append(timeCell(rowStart, rowEnd, !anyBlock));
             if (!anyBlock) {
-                tr.append(gapCell(rowStart, rowEnd, dayColumnCount));
+                // One gap cell per day, so the split lines between the days stay visible.
+                weekDates.forEach((date, day) => {
+                    tr.append($(`<td colspan="${laneCounts[day]}" class="tt-gap tt-day-start"/>`)
+                        .text(rowStart >= "12:05" && rowEnd <= "13:30" ? "Middagpauze" : "–"));
+                });
             } else {
                 lanesPerDay.forEach((lanes, day) => {
                     for (let lane = 0; lane < laneCounts[day]; lane++) {
@@ -825,6 +869,10 @@ function renderTimetable(schedule) {
                         const block = blocks.find(b => b.start === rowStart);
                         if (block != null) {
                             const td = $(`<td rowspan="${boundaries.indexOf(block.end) - row}"/>`);
+                            if (lane === 0) {
+                                // The first lane of a day gets the split line between the days.
+                                td.addClass("tt-day-start");
+                            }
                             if (block.open) {
                                 td.addClass("tt-open").text("vrij · " + classroomLabel(block.shifts[0].classrooms));
                             } else if (peMode) {
@@ -837,7 +885,7 @@ function renderTimetable(schedule) {
                             tr.append(td);
                         } else if (!blocks.some(b => b.start < rowStart && b.end > rowStart)) {
                             // No block covering this lane on this row: an empty, writable cell.
-                            tr.append($("<td/>"));
+                            tr.append(lane === 0 ? $("<td class=\"tt-day-start\"/>") : $("<td/>"));
                         }
                         // Otherwise the cell is covered by a rowspan from an earlier row.
                     }

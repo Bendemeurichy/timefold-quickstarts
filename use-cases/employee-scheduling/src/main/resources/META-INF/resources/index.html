@@ -129,39 +129,48 @@
             background-color: #f4b6b6;
             border: 2px dashed #ef2929;
         }
+        /* A clear split line between the weekday columns, so it is obvious which
+           chips belong to which day, also on the printout. */
+        .timetable-table th.tt-day-start,
+        .timetable-table td.tt-day-start {
+            border-left: 2px solid #495057;
+        }
+        /* The same split line between the time axis and the first day. */
+        .timetable-table .tt-time {
+            border-right: 2px solid #495057;
+        }
 
-        /* Printable roster: hide everything except the week roster when printing */
+        /* Printing: only the time-aligned timetable is printed (the per-shift roster is
+           for editing on screen, not for paper). The beforeprint handler in app.js
+           freezes the timetable's on-screen width and zooms it onto the page, so the
+           printout looks exactly like the timetable visualised in the UI instead of
+           being squeezed into the narrower paper width. */
         @media print {
-            header, #actions, blockquote, #notificationPanel {
-                display: none !important;
+            @page {
+                size: A4 landscape;
+                margin: 8mm;
             }
-            .tab-content > .tab-pane {
-                display: none !important;
-            }
-            /* The time-aligned timetable is printed instead of the per-shift roster */
-            #rosterPanel {
+            header, #actions, blockquote, .sticky-top, .tab-content {
                 display: none !important;
             }
             #timetablePanel {
                 display: block !important;
             }
             .roster-week {
-                break-inside: avoid;
                 box-shadow: none !important;
             }
-            .roster-chip, .roster-no-lunch, .roster-table thead th, .roster-location-cell,
-            .roster-select, .timetable-table td, .timetable-table thead th, .tt-time, .tt-gap {
+            /* Every week starts on a fresh page, without a blank first page */
+            #timetablePanel .roster-week + .roster-week {
+                break-before: page;
+            }
+            /* A week timetable can be taller than one page: break between rows,
+               never through a row (which would cut a duty's chips in half) */
+            .timetable-table tr {
+                break-inside: avoid;
+            }
+            .timetable-table td, .timetable-table thead th, .tt-time, .tt-gap, .tt-duty {
                 -webkit-print-color-adjust: exact;
                 print-color-adjust: exact;
-            }
-            /* On paper the dropdown prints as the plain name, without the lock button */
-            .roster-pin {
-                display: none !important;
-            }
-            .roster-select {
-                appearance: none;
-                -webkit-appearance: none;
-                box-shadow: none;
             }
         }
     </style>
