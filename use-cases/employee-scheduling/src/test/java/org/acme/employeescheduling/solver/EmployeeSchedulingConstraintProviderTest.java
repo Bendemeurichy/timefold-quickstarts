@@ -627,5 +627,41 @@ class EmployeeSchedulingConstraintProviderTest {
                         new Shift("2", DAY_START_TIME.minusDays(1), DAY_END_TIME, "Location", "Skill", employee2))
                 .penalizesBy(0);
 
+        // Contracts weight the fair share: Carl is full-time (1.0), Dan part-time (0.5), Elsa 4/5 (0.8).
+        Employee fullTime = new Employee("Carl", null, null, null, Collections.emptySet());
+        fullTime.setWorkRatio(1.0);
+        Employee halfTime = new Employee("Dan", null, null, null, Collections.emptySet());
+        halfTime.setWorkRatio(0.5);
+        Employee fourFifths = new Employee("Elsa", null, null, null, Collections.emptySet());
+        fourFifths.setWorkRatio(0.8);
+
+        // 2 shifts for the full-time teacher and 1 for the half-time teacher is perfectly balanced.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::balanceEmployeeShiftAssignments)
+                .given(fullTime, halfTime,
+                        new Shift("1", DAY_START_TIME.minusDays(1), DAY_END_TIME, "Location", "Skill", fullTime),
+                        new Shift("2", DAY_START_TIME.minusDays(2), DAY_END_TIME, "Location", "Skill", fullTime),
+                        new Shift("3", DAY_START_TIME.minusDays(3), DAY_END_TIME, "Location", "Skill", halfTime))
+                .penalizesBy(0);
+
+        // 5 shifts for the full-time teacher and 4 for the 4/5 teacher is perfectly balanced.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::balanceEmployeeShiftAssignments)
+                .given(fullTime, fourFifths,
+                        new Shift("1", DAY_START_TIME.minusDays(1), DAY_END_TIME, "Location", "Skill", fullTime),
+                        new Shift("2", DAY_START_TIME.minusDays(2), DAY_END_TIME, "Location", "Skill", fullTime),
+                        new Shift("3", DAY_START_TIME.minusDays(3), DAY_END_TIME, "Location", "Skill", fullTime),
+                        new Shift("4", DAY_START_TIME.minusDays(4), DAY_END_TIME, "Location", "Skill", fullTime),
+                        new Shift("5", DAY_START_TIME.minusDays(5), DAY_END_TIME, "Location", "Skill", fullTime),
+                        new Shift("6", DAY_START_TIME.minusDays(6), DAY_END_TIME, "Location", "Skill", fourFifths),
+                        new Shift("7", DAY_START_TIME.minusDays(7), DAY_END_TIME, "Location", "Skill", fourFifths),
+                        new Shift("8", DAY_START_TIME.minusDays(8), DAY_END_TIME, "Location", "Skill", fourFifths),
+                        new Shift("9", DAY_START_TIME.minusDays(9), DAY_END_TIME, "Location", "Skill", fourFifths))
+                .penalizesBy(0);
+
+        // An equal shift count is no longer fair when the contracts differ.
+        constraintVerifier.verifyThat(EmployeeSchedulingConstraintProvider::balanceEmployeeShiftAssignments)
+                .given(fullTime, halfTime,
+                        new Shift("1", DAY_START_TIME.minusDays(1), DAY_END_TIME, "Location", "Skill", fullTime),
+                        new Shift("2", DAY_START_TIME.minusDays(2), DAY_END_TIME, "Location", "Skill", halfTime))
+                .penalizesByMoreThan(0);
     }
 }

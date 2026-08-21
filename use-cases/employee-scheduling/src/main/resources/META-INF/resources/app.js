@@ -1750,10 +1750,10 @@ function generateScheduleFromConfig(config) {
     });
 
     // The maximum duty time per teacher per week (a hard constraint for the solver): the total
-    // weekly shift time is divided over all teachers, weighted by their contract ratio. Teachers
-    // with a custom contract get exactly their configured weekly maximum and stay out of the
-    // weighted division. Volunteer shifts take no teacher time, so they do not count towards
-    // the total.
+    // weekly shift time is divided over the teachers, weighted by their contract ratio. Teachers
+    // with a custom contract get exactly their configured weekly maximum; their maxima are
+    // deducted from the weekly shift time before the rest is divided over the other teachers.
+    // Volunteer shifts take no teacher time, so they do not count towards the total.
     const totalShiftMinutes = shifts.filter(shift => !shift.volunteersOnly)
         .reduce((total, shift) => total
         + JSJoda.LocalDateTime.parse(shift.start)
@@ -1761,18 +1761,23 @@ function generateScheduleFromConfig(config) {
     // Every week of the schedule has the same shifts, so the weekly total is the total divided
     // over the number of weeks.
     const weeklyShiftMinutes = totalShiftMinutes / config.weeks;
+    // Minute limits are rounded up to the nearest multiple of 5.
+    const roundUpTo5 = minutes => Math.ceil(minutes / 5) * 5;
+    const customMaxMinutes = teacher => roundUpTo5(Math.max(0, parseInt(teacher.maxMinutes) || 0));
+    const customMinutesSum = config.teachers
+        .filter(teacher => contractRatio(teacher) == null)
+        .reduce((sum, teacher) => sum + customMaxMinutes(teacher), 0);
+    const remainingWeeklyShiftMinutes = Math.max(0, weeklyShiftMinutes - customMinutesSum);
     const ratioSum = config.teachers
         .map(teacher => contractRatio(teacher))
         .filter(ratio => ratio != null)
         .reduce((sum, ratio) => sum + ratio, 0);
-    // Minute limits are rounded up to the nearest multiple of 5.
-    const roundUpTo5 = minutes => Math.ceil(minutes / 5) * 5;
     config.teachers.forEach((teacher, index) => {
         const ratio = contractRatio(teacher);
         employees[index].workRatio = ratio;
         employees[index].maxWorkingMinutes = ratio == null
-            ? roundUpTo5(Math.max(0, parseInt(teacher.maxMinutes) || 0))
-            : (ratioSum > 0 ? roundUpTo5(weeklyShiftMinutes * ratio / ratioSum) : null);
+            ? customMaxMinutes(teacher)
+            : (ratioSum > 0 ? roundUpTo5(remainingWeeklyShiftMinutes * ratio / ratioSum) : null);
     });
 
     return {employees: employees, shifts: shifts, peMode: config.peMode === true, score: null, solverStatus: null};

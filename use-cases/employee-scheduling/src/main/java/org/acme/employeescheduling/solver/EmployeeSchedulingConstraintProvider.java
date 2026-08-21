@@ -3,6 +3,7 @@ package org.acme.employeescheduling.solver;
 import static ai.timefold.solver.core.api.score.stream.Joiners.equal;
 import static ai.timefold.solver.core.api.score.stream.Joiners.overlapping;
 
+import java.math.BigDecimal;
 import java.time.DayOfWeek;
 import java.time.LocalTime;
 import java.util.Objects;
@@ -133,7 +134,8 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
 
     Constraint maxWorkingMinutes(ConstraintFactory constraintFactory) {
         // A teacher's contract caps the minutes they may be assigned per week (Monday to Sunday):
-        // the total weekly shift time is divided over all teachers, weighted by each teacher's work ratio.
+        // the weekly shift time, minus the custom teachers' maxima, is divided over the other
+        // teachers, weighted by each teacher's work ratio.
         // Teachers without a cap (null) can take any amount of minutes.
         return constraintFactory.forEach(Shift.class)
                 .filter(shift -> shift.getEmployee() != null && shift.getEmployee().getMaxWorkingMinutes() != null)
@@ -247,15 +249,33 @@ public class EmployeeSchedulingConstraintProvider implements ConstraintProvider 
                 .asConstraint("No simultaneous duties for same classroom");
     }
 
+    // The load balance works on whole numbers, so the shift count divided by the contract weight
+    // is scaled to keep a few decimals of precision. The unfairness grows with that same scale,
+    // so the penalty is divided by it again: fairness must stay weaker than the other soft
+    // constraints (such as (un)desired days), not a thousand times stronger.
+    private static final long FAIRNESS_SCALE = 1000L;
+    private static final BigDecimal FAIRNESS_SCALE_DECIMAL = BigDecimal.valueOf(FAIRNESS_SCALE);
+
     Constraint balanceEmployeeShiftAssignments(ConstraintFactory constraintFactory) {
+        // Fair share weighted by contract: a 4/5 teacher is due 0.8 times the shifts of a
+        // full-time teacher, a part-time teacher 0.5 times. Balancing the shift count divided
+        // by the contract weight makes the distribution proportional to how much they work.
         return constraintFactory.forEach(Shift.class)
                 .filter(shift -> shift.getEmployee() != null) // Unassigned shifts do not distort the balance.
                 .groupBy(Shift::getEmployee, ConstraintCollectors.count())
                 .complement(Employee.class, e -> 0L) // Include all employees which are not assigned to any shift.
                 .groupBy(ConstraintCollectors.loadBalance((employee, shiftCount) -> employee,
-                        (employee, shiftCount) -> shiftCount))
-                .penalizeBigDecimal(HardSoftBigDecimalScore.ONE_SOFT, LoadBalance::unfairness)
+                        (employee, shiftCount) -> Math.round(shiftCount * FAIRNESS_SCALE / contractWeight(employee))))
+                .penalizeBigDecimal(HardSoftBigDecimalScore.ONE_SOFT,
+                        balance -> balance.unfairness().divide(FAIRNESS_SCALE_DECIMAL))
                 .asConstraint("Balance employee shift assignments");
+    }
+
+    private static double contractWeight(Employee employee) {
+        // The teacher's share of the shifts, relative to a full-time teacher. Teachers without
+        // a contract ratio (custom contract or none at all) count as a full share.
+        // Clamped to a small positive value so a 0% contract cannot cause a division by zero.
+        return employee.getWorkRatio() != null ? Math.max(employee.getWorkRatio(), 0.01) : 1.0;
     }
 
 }
